@@ -86,13 +86,13 @@
         await processWithGemini(files[i], apiKey, i + 1);
       }
 
-      document.getElementById('status').innerText = `Saari ${files.length} images crop ho gayi hain!`;
+      document.getElementById('status').innerText = `Saari ${files.length} images perfectly crop ho chuki hain!`;
     });
 
     async function processWithGemini(file, apiKey, index) {
       const base64Data = await fileToBase64(file);
       
-      const promptText = "Detect the main interior/property room photograph inside this screenshot. Ignore all UI elements, status bar, header, ads, floating PIP videos, text below, WhatsApp buttons, and surrounding white spaces. Output 4 integer coordinates [ymin, xmin, ymax, xmax] normalized on a scale from 0 to 1000.";
+      const promptText = "Detect the main interior or property room photograph inside this screenshot. Completely ignore top status bar, top header/X buttons, floating video windows, bottom WhatsApp/contact buttons, text, and all surrounding white spaces. Return strictly 4 integer coordinates [ymin, xmin, ymax, xmax] normalized on a scale from 0 to 1000.";
 
       const payload = {
         contents: [{
@@ -111,27 +111,38 @@
         }
       };
 
-      try {
-        // Using gemini-2.0-flash endpoint
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
+      // Primary Model: gemini-3.6-flash, Fallback: gemini-2.5-flash
+      const models = ['gemini-3.6-flash', 'gemini-2.5-flash'];
+      let coords = null;
+      let lastError = null;
 
-        if (!response.ok) {
-          const errData = await response.json();
-          throw new Error(errData.error?.message || "API Error");
+      for (const modelName of models) {
+        try {
+          const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.error?.message || `HTTP ${response.status}`);
+          }
+
+          const data = await response.json();
+          const rawJsonText = data.candidates[0].content.parts[0].text;
+          coords = JSON.parse(rawJsonText);
+          if (coords && coords.length === 4) break; // Successfully obtained coordinates
+        } catch (err) {
+          lastError = err;
+          console.warn(`Model ${modelName} failed, trying next...`, err);
         }
+      }
 
-        const data = await response.json();
-        const rawJsonText = data.candidates[0].content.parts[0].text;
-        const coords = JSON.parse(rawJsonText);
-
+      if (coords) {
         cropImageWithCanvas(file, coords, index);
-      } catch (err) {
-        console.error(err);
-        alert(`Error image ${index}: ` + err.message);
+      } else {
+        alert(`Error image ${index}: ` + (lastError ? lastError.message : 'Processing failed'));
       }
     }
 
@@ -142,7 +153,7 @@
         const w = img.width;
         const h = img.height;
 
-        // Coordinates scale: 0 to 1000
+        // Scale normalized 0-1000 coordinates back to actual pixel dimensions
         const ymin = Math.max(0, Math.floor((coords[0] / 1000) * h));
         const xmin = Math.max(0, Math.floor((coords[1] / 1000) * w));
         const ymax = Math.min(h, Math.ceil((coords[2] / 1000) * h));
