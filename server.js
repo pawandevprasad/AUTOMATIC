@@ -5,21 +5,21 @@ const AWS = require('aws-sdk');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Base64 images ke liye JSON Payload limit badhai gayi hai
+// Base64 images ke liye JSON Payload limit set ki gayi hai
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// Serve static HTML/JS files from 'public' directory
+// Serve static files from 'public' folder
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Render Environment Variables se AWS S3 Configure karein
+// Configure AWS S3 from Render Environment Variables
 const s3 = new AWS.S3({
   accessKeyId: process.env.AWS_ACCESS_KEY_ID,
   secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   region: process.env.AWS_REGION || 'ap-south-1'
 });
 
-// Endpoint: Frontend ko Gemini API Key safe tareeke se bhejne ke liye
+// Endpoint: Gemini Key safely return karein
 app.get('/api/get-gemini-key', (req, res) => {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -28,7 +28,7 @@ app.get('/api/get-gemini-key', (req, res) => {
   res.json({ apiKey });
 });
 
-// Endpoint: Cropped Base64 Image ko Direct S3 Bucket par Upload karne ke liye
+// Endpoint: Cropped Base64 Image ko S3 par Upload karein
 app.post('/api/upload-s3', async (req, res) => {
   try {
     const { imageBase64, filename } = req.body;
@@ -42,7 +42,6 @@ app.post('/api/upload-s3', async (req, res) => {
       return res.status(500).json({ error: 'Render me AWS_BUCKET_NAME variable missing hai!' });
     }
 
-    // Base64 string ko Buffer me convert karein
     const base64Data = Buffer.from(
       imageBase64.replace(/^data:image\/\w+;base64,/, ""),
       'base64'
@@ -68,7 +67,7 @@ app.post('/api/upload-s3', async (req, res) => {
   }
 });
 
-// Fallback Route: Root URL par index.html serve karein
+// Fallback Route
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
