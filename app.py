@@ -258,12 +258,15 @@ def index():
     except Exception as e:
         return f"Template Render Error: {str(e)}", 500
 
-# 🌟 Stable Bounding Box Endpoint with Auto-Fallback
+# 🌟 Stable Bounding Box Endpoint (Updated to 3.6 Model with Correct Schema)
 @app.route('/api/detect-crop-box', methods=['POST'])
 def detect_crop_box():
     try:
         if 'image' not in request.files:
             return jsonify({'success': False, 'error': 'No image provided'}), 400
+
+        if not GEMINI_API_KEY:
+            return jsonify({'success': False, 'error': 'GEMINI_API_KEY missing'}), 500
 
         file = request.files['image']
         img = Image.open(file.stream).convert("RGB")
@@ -276,7 +279,7 @@ def detect_crop_box():
         prompt_text = (
             "Detect the main interior or property room photograph inside this screenshot. "
             "Completely ignore top status bar, header X buttons, floating video windows, bottom WhatsApp/contact buttons, and white spaces. "
-            "Return ONLY a JSON array with 4 integer coordinates [ymin, xmin, ymax, xmax] normalized from 0 to 1000. Example: [250, 0, 750, 1000]"
+            "Return strictly 4 integer coordinates [ymin, xmin, ymax, xmax] normalized from 0 to 1000."
         )
 
         payload = {
@@ -285,32 +288,30 @@ def detect_crop_box():
                     {"text": prompt_text},
                     {"inline_data": {"mime_type": "image/jpeg", "data": base64_str}}
                 ]
-            }]
+            }],
+            "generationConfig": {
+                "response_mime_type": "application/json",
+                "response_schema": {
+                    "type": "ARRAY",
+                    "items": {"type": "INTEGER"}
+                }
+            }
         }
 
-        # Try stable endpoints in order
-        models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash"]
-        coords = None
-        last_error = ""
+        # 🎯 Standard API Version + Correct Model (3.6)
+        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
+        
+        res = requests.post(gemini_url, json=payload, timeout=20)
 
-        for model_name in models_to_try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-            try:
-                res = requests.post(url, json=payload, timeout=20)
-                if res.ok:
-                    res_data = res.json()
-                    raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
-                    clean = raw_text.replace("```json", "").replace("```", "").strip()
-                    coords = json.loads(clean)
-                    if isinstance(coords, list) and len(coords) == 4:
-                        break
-                else:
-                    last_error = f"API Error ({res.status_code}): {res.text}"
-            except Exception as ex:
-                last_error = str(ex)
+        if not res.ok:
+            return jsonify({'success': False, 'error': f"Gemini API Error: {res.text}"}), 500
 
-        if not coords:
-            return jsonify({'success': False, 'error': last_error or 'Could not detect bounding box'}), 500
+        res_data = res.json()
+        raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
+        coords = json.loads(raw_text)
+
+        if not isinstance(coords, list) or len(coords) != 4:
+            return jsonify({'success': False, 'error': 'Invalid bounding box coordinates from AI'}), 500
 
         return jsonify({'success': True, 'coords': coords})
 
@@ -398,7 +399,7 @@ CRITICAL EXTRACTION RULES:
             except Exception as img_err:
                 print(f"Image warning: {img_err}")
 
-        gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=){GEMINI_API_KEY}"
+        gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=){GEMINI_API_KEY}"
         res = requests.post(gemini_url, json={"contents": [{"parts": parts}]}, timeout=45)
 
         if not res.ok:
@@ -441,4 +442,4 @@ def submit_to_db():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-            
+        
