@@ -1,7 +1,6 @@
 import os
 import io
 import json
-import time
 import base64
 import boto3
 import requests
@@ -258,7 +257,7 @@ def index():
     except Exception as e:
         return f"Template Render Error: {str(e)}", 500
 
-# 🌟 Stable Bounding Box Endpoint (Updated to 3.6 Model with Correct Schema)
+# 🌟 Original Gemini Bounding Box Crop Endpoint (No Schema Conflict)
 @app.route('/api/detect-crop-box', methods=['POST'])
 def detect_crop_box():
     try:
@@ -270,16 +269,17 @@ def detect_crop_box():
 
         file = request.files['image']
         img = Image.open(file.stream).convert("RGB")
-        img.thumbnail((600, 600))
+        img.thumbnail((800, 800))
         
         byte_arr = io.BytesIO()
-        img.save(byte_arr, format='JPEG', quality=80)
+        img.save(byte_arr, format='JPEG', quality=85)
         base64_str = base64.b64encode(byte_arr.getvalue()).decode('utf-8')
 
         prompt_text = (
-            "Detect the main interior or property room photograph inside this screenshot. "
-            "Completely ignore top status bar, header X buttons, floating video windows, bottom WhatsApp/contact buttons, and white spaces. "
-            "Return strictly 4 integer coordinates [ymin, xmin, ymax, xmax] normalized from 0 to 1000."
+            "Detect the main property or room photograph inside this screenshot. "
+            "Ignore top status bar, floating video overlays, contact buttons, and surrounding white margins. "
+            "Return ONLY a raw JSON array of 4 normalized integer coordinates [ymin, xmin, ymax, xmax] from 0 to 1000. "
+            "Do NOT include markdown formatting or extra text. Example response: [200, 50, 800, 950]"
         )
 
         payload = {
@@ -288,30 +288,27 @@ def detect_crop_box():
                     {"text": prompt_text},
                     {"inline_data": {"mime_type": "image/jpeg", "data": base64_str}}
                 ]
-            }],
-            "generationConfig": {
-                "response_mime_type": "application/json",
-                "response_schema": {
-                    "type": "ARRAY",
-                    "items": {"type": "INTEGER"}
-                }
-            }
+            }]
         }
 
-        # 🎯 Standard API Version + Correct Model (3.6)
-        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
+        # Original stable endpoint (v1beta gemini-1.5-flash or gemini-2.5-flash)
+        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
         
-        res = requests.post(gemini_url, json=payload, timeout=20)
+        res = requests.post(gemini_url, json=payload, timeout=25)
+
+        if not res.ok:
+            # Fallback to gemini-2.0-flash if needed
+            fallback_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+            res = requests.post(fallback_url, json=payload, timeout=25)
 
         if not res.ok:
             return jsonify({'success': False, 'error': f"Gemini API Error: {res.text}"}), 500
 
         res_data = res.json()
         raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
-        coords = json.loads(raw_text)
-
-        if not isinstance(coords, list) or len(coords) != 4:
-            return jsonify({'success': False, 'error': 'Invalid bounding box coordinates from AI'}), 500
+        
+        clean_json = raw_text.replace("```json", "").replace("```", "").strip()
+        coords = json.loads(clean_json)
 
         return jsonify({'success': True, 'coords': coords})
 
@@ -399,7 +396,7 @@ CRITICAL EXTRACTION RULES:
             except Exception as img_err:
                 print(f"Image warning: {img_err}")
 
-        gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=){GEMINI_API_KEY}"
+        gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=){GEMINI_API_KEY}"
         res = requests.post(gemini_url, json={"contents": [{"parts": parts}]}, timeout=45)
 
         if not res.ok:
@@ -442,4 +439,4 @@ def submit_to_db():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-        
+                                        
