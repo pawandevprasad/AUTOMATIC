@@ -160,10 +160,20 @@
         const w = img.width;
         const h = img.height;
 
-        const ymin = Math.max(0, Math.floor((coords[0] / 1000) * h));
-        const xmin = Math.max(0, Math.floor((coords[1] / 1000) * w));
-        const ymax = Math.min(h, Math.ceil((coords[2] / 1000) * h));
-        const xmax = Math.min(w, Math.ceil((coords[3] / 1000) * w));
+        // White border ko cut karne ke liye crop area tight karne ke points
+        const tightenPoints = 15;
+
+        // Tighten coordinate limits (0 to 1000 scale)
+        const tightenedYmin = coords[0] + tightenPoints;
+        const tightenedXmin = coords[1] + tightenPoints;
+        const tightenedYmax = coords[2] - tightenPoints;
+        const tightenedXmax = coords[3] - tightenPoints;
+
+        // Coordinates scale to pixels
+        const ymin = Math.max(0, Math.floor((tightenedYmin / 1000) * h));
+        const xmin = Math.max(0, Math.floor((tightenedXmin / 1000) * w));
+        const ymax = Math.min(h, Math.ceil((tightenedYmax / 1000) * h));
+        const xmax = Math.min(w, Math.ceil((tightenedXmax / 1000) * w));
 
         const cropW = xmax - xmin;
         const cropH = ymax - ymin;
