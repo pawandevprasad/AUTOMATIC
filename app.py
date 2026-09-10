@@ -7,7 +7,8 @@ import requests
 from flask import Flask, request, jsonify, render_template
 from PIL import Image
 
-app = Flask(__name__, template_folder='.')
+# Template folder explicitly set to 'templates' to fix TemplateNotFound
+app = Flask(__name__, template_folder='templates')
 
 # --- CONFIGURATIONS & ENV VARIABLES ---
 MONGO_URI = os.environ.get("MONGO_URI", "")
@@ -50,7 +51,7 @@ if AWS_ACCESS_KEY and AWS_SECRET_KEY:
         s3_client = boto3.client(
             's3',
             aws_access_key_id=AWS_ACCESS_KEY,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            aws_secret_access_key=AWS_SECRET_KEY,
             region_name=AWS_REGION
         )
     except Exception as s3_err:
@@ -244,7 +245,10 @@ def process_and_enforce_rules(data, s3_urls):
 
 @app.route('/')
 def index():
-    return render_template('index.html', db_name=DB_NAME, collection_name=COLLECTION_NAME)
+    try:
+        return render_template('index.html', db_name=DB_NAME, collection_name=COLLECTION_NAME)
+    except Exception as e:
+        return f"Template Render Error: {str(e)}", 500
 
 @app.route('/api/upload-s3-single', methods=['POST'])
 def upload_s3_single():
@@ -255,15 +259,17 @@ def upload_s3_single():
         file = request.files['image']
         filename = f"cropped_{os.urandom(8).hex()}.jpg"
 
-        s3_client.upload_fileobj(
-            file,
-            S3_BUCKET,
-            filename,
-            ExtraArgs={'ContentType': 'image/jpeg'}
-        )
-
-        file_url = f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{filename}"
-        return jsonify({"success": True, "url": file_url}), 200
+        if s3_client:
+            s3_client.upload_fileobj(
+                file,
+                S3_BUCKET,
+                filename,
+                ExtraArgs={'ContentType': 'image/jpeg'}
+            )
+            file_url = f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{filename}"
+            return jsonify({"success": True, "url": file_url}), 200
+        else:
+            return jsonify({"success": False, "error": "S3 Client not initialized. Check AWS credentials."}), 500
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -324,11 +330,22 @@ CRITICAL EXTRACTION RULES:
             except Exception as img_err:
                 print(f"Image load error: {img_err}")
 
-        gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=){GEMINI_API_KEY}"
-        res = requests.post(gemini_url, json={"contents": [{"parts": parts}]}, timeout=45)
+        # Multiple Model Failover Strategy
+        models = ["gemini-2.5-flash", "gemini-1.5-flash"]
+        res = None
 
-        if not res.ok:
-            return jsonify({"success": False, "error": f"Gemini API Error: {res.text}"}), 500
+        for m in models:
+            gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){m}:generateContent?key={GEMINI_API_KEY}"
+            try:
+                res = requests.post(gemini_url, json={"contents": [{"parts": parts}]}, timeout=45)
+                if res.ok:
+                    break
+            except Exception:
+                pass
+
+        if not res or not res.ok:
+            err_msg = res.text if res else "Failed to contact Gemini API"
+            return jsonify({"success": False, "error": f"Gemini API Error: {err_msg}"}), 500
 
         res_data = res.json()
         raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
@@ -367,4 +384,4 @@ def submit_to_db():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-                                        
+    
