@@ -152,7 +152,8 @@
         }
       };
 
-      const models = ['gemini-3.6-flash', 'gemini-2.5-flash'];
+      // Exclusively using gemini-3.6-flash (fallback gemini-1.5-flash)
+      const models = ['gemini-3.6-flash', 'gemini-1.5-flash'];
       let coords = null;
       let lastError = null;
 
@@ -176,131 +177,5 @@
             throw new Error("API se koi valid response nahi mila.");
           }
 
-          rawJsonText = rawJsonText.replace(/```json/g, '').replace(/```/g, '').trim();
-          coords = JSON.parse(rawJsonText);
-
-          if (Array.isArray(coords) && coords.length === 4) break; 
-        } catch (err) {
-          lastError = err;
-          console.warn(`Model ${modelName} failed:`, err);
-        }
-      }
-
-      if (coords) {
-        await cropAndUploadToS3(file, coords, index);
-      } else {
-        alert(`Error image ${index}: ` + (lastError ? lastError.message : 'Processing failed'));
-      }
-    }
-
-    // ORIGINAL EXACT CROP LOGIC (0% CHANGE)
-    function cropAndUploadToS3(file, coords, index) {
-      return new Promise((resolve) => {
-        const img = new Image();
-        img.src = URL.createObjectURL(file);
-        img.onload = async () => {
-          const w = img.width;
-          const h = img.height;
-
-          // Auto inset by ~1% (10 units out of 1000) to trim any sub-pixel white edges
-          const safeInset = 10;
-
-          const ymin = Math.max(0, Math.floor(((coords[0] + safeInset) / 1000) * h));
-          const xmin = Math.max(0, Math.floor(((coords[1] + safeInset) / 1000) * w));
-          const ymax = Math.min(h, Math.ceil(((coords[2] - safeInset) / 1000) * h));
-          const xmax = Math.min(w, Math.ceil(((coords[3] - safeInset) / 1000) * w));
-
-          const cropW = xmax - xmin;
-          const cropH = ymax - ymin;
-
-          if (cropW <= 0 || cropH <= 0) {
-            resolve();
-            return;
-          }
-
-          const canvas = document.createElement('canvas');
-          canvas.width = cropW;
-          canvas.height = cropH;
-          const ctx = canvas.getContext('2d');
-
-          ctx.drawImage(img, xmin, ymin, cropW, cropH, 0, 0, cropW, cropH);
-          const croppedUrl = canvas.toDataURL('image/jpeg', 0.95);
-
-          let s3Url = "Uploading to S3...";
-
-          try {
-            // Render Backend Server ko S3 Upload ke liye call karein
-            const res = await fetch('/api/upload-s3', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                imageBase64: croppedUrl,
-                filename: `cropped_property_${Date.now()}_${index}.jpg`
-              })
-            });
-
-            const resData = await res.json();
-            if (res.ok && resData.url) {
-              s3Url = resData.url;
-              uploadedUrls.push(s3Url);
-            } else {
-              throw new Error(resData.error || 'Upload failed');
-            }
-          } catch (err) {
-            console.error("S3 Upload Failed:", err);
-            s3Url = "S3 Upload Failed: " + err.message;
-          }
-
-          renderCard(croppedUrl, s3Url, index);
-          resolve();
-        };
-      });
-    }
-
-    function renderCard(croppedUrl, s3Url, index) {
-      const card = document.createElement('div');
-      card.className = 'card';
-
-      const isSuccess = s3Url.startsWith('http');
-
-      card.innerHTML = `
-        <div class="img-wrapper"><img src="${croppedUrl}"></div>
-        <div class="url-container">
-          <input type="text" readonly class="url-input" id="urlInput_${index}" value="${s3Url}">
-          ${isSuccess ? `<button class="action-btn" onclick="copySingleUrl('urlInput_${index}', this)">Copy</button>` : ''}
-        </div>
-        <div class="card-footer">
-          <a href="${croppedUrl}" download="cropped_${index}.jpg" class="action-btn" style="background:#334155;">Local Download</a>
-        </div>
-      `;
-      document.getElementById('resultsGrid').appendChild(card);
-    }
-
-    function copySingleUrl(inputId, btnElement) {
-      const input = document.getElementById(inputId);
-      input.select();
-      navigator.clipboard.writeText(input.value);
-      const originalText = btnElement.innerText;
-      btnElement.innerText = "Copied!";
-      setTimeout(() => { btnElement.innerText = originalText; }, 1500);
-    }
-
-    function copyAllUrls() {
-      if (uploadedUrls.length === 0) return;
-      const allText = uploadedUrls.join('\n');
-      navigator.clipboard.writeText(allText);
-      alert(`${uploadedUrls.length} S3 URLs clipboard par copy ho chuke hain!`);
-    }
-
-    function fileToBase64(file) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = error => reject(error);
-      });
-    }
-  </script>
-</body>
-</html>
-
+          rawJsonText = rawJsonText.replace(/```json/g, '').replace(/
+            
