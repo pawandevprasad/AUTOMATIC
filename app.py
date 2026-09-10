@@ -1,6 +1,7 @@
 import os
 import io
 import json
+import time
 import base64
 import boto3
 import requests
@@ -256,9 +257,14 @@ def detect_crop_box():
             return jsonify({'success': False, 'error': 'No image provided'}), 400
 
         file = request.files['image']
-        image_bytes = file.read()
-        mime_type = file.mimetype or 'image/jpeg'
-        base64_image = base64.b64encode(image_bytes).decode('utf-8')
+        
+        # Image optimization for fast Gemini response
+        img = Image.open(file.stream).convert("RGB")
+        img.thumbnail((800, 800))
+        
+        byte_arr = io.BytesIO()
+        img.save(byte_arr, format='JPEG', quality=85)
+        base64_image = base64.b64encode(byte_arr.getvalue()).decode('utf-8')
 
         prompt_text = (
             "Detect the main interior or property room photograph inside this screenshot. "
@@ -270,7 +276,7 @@ def detect_crop_box():
             "contents": [{
                 "parts": [
                     {"text": prompt_text},
-                    {"inline_data": {"mime_type": mime_type, "data": base64_image}}
+                    {"inline_data": {"mime_type": "image/jpeg", "data": base64_image}}
                 ]
             }],
             "generationConfig": {
@@ -283,10 +289,22 @@ def detect_crop_box():
         }
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
-        res = requests.post(url, json=payload, timeout=25)
+        
+        # Robust Retry Mechanism with 60s timeout
+        res = None
+        last_err = None
+        for attempt in range(3):
+            try:
+                res = requests.post(url, json=payload, timeout=60)
+                if res.ok:
+                    break
+            except Exception as e:
+                last_err = e
+                time.sleep(2)
 
-        if not res.ok:
-            return jsonify({'success': False, 'error': f"Gemini API Error: {res.text}"}), 500
+        if not res or not res.ok:
+            err_msg = res.text if res else str(last_err)
+            return jsonify({'success': False, 'error': f"Gemini API Error: {err_msg}"}), 500
 
         res_data = res.json()
         text_content = res_data['candidates'][0]['content']['parts'][0]['text']
@@ -361,10 +379,10 @@ CRITICAL EXTRACTION RULES:
             try:
                 img = Image.open(file.stream)
                 img = img.convert("RGB")
-                img.thumbnail((1200, 1200))
+                img.thumbnail((1000, 1000))
                 
                 byte_arr = io.BytesIO()
-                img.save(byte_arr, format='JPEG', quality=90)
+                img.save(byte_arr, format='JPEG', quality=85)
                 image_bytes = byte_arr.getvalue()
 
                 contents.append(
@@ -421,4 +439,4 @@ def submit_to_db():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
-    
+        
