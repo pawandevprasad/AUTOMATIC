@@ -1,14 +1,10 @@
 import os
 import io
 import json
-import time
 import base64
 import boto3
 import requests
 from flask import Flask, request, jsonify, render_template
-from pymongo import MongoClient
-from google import genai
-from google.genai import types
 from PIL import Image
 
 app = Flask(__name__, template_folder='templates')
@@ -21,6 +17,7 @@ COLLECTION_NAME = "properties"
 collection = None
 if MONGO_URI:
     try:
+        from pymongo import MongoClient
         client_db = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
         db = client_db[DB_NAME]
         collection = db[COLLECTION_NAME]
@@ -194,7 +191,6 @@ def process_and_enforce_rules(data, s3_urls):
     if not created_at_val or str(created_at_val).lower() in ["na", "none", "null"]:
         created_at_val = "few years"
 
-    # STRICT SERIAL ORDERED OUTPUT
     return {
         "user_id": data.get("user_id", "ADMIN"),
         "posted_by_type": data.get("posted_by_type", "ADMIN"),
@@ -261,7 +257,6 @@ def index():
     except Exception as e:
         return f"Template Render Error: {str(e)}", 500
 
-# 🌟 Gemini AI-Powered Crop Detection (Fast Light Image Payload)
 @app.route('/api/detect-crop-box', methods=['POST'])
 def detect_crop_box():
     try:
@@ -270,7 +265,6 @@ def detect_crop_box():
 
         file = request.files['image']
         
-        # Super-Light Weight Resize (Fast API Response)
         img = Image.open(file.stream).convert("RGB")
         img.thumbnail((600, 600))
         
@@ -338,7 +332,7 @@ def upload_s3_single():
         return jsonify({"success": True, "url": file_url}), 200
 
     except Exception as e:
-        return jsonify({"success": False, "error": f"S3 Upload Error: {str(e)}"}), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/extract-json', methods=['POST'])
 def extract_json():
@@ -437,5 +431,6 @@ def submit_to_db():
         return jsonify({"success": False, "error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-    
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
+        
