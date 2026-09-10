@@ -201,7 +201,7 @@
       document.getElementById('actionBar').style.display = "flex";
     });
 
-    // Helper: Call Gemini API directly from Frontend set to gemini-3.6-flash
+    // Safe multi-model fallback handler to prevent JSON crash
     async function getGeminiCropBox(file, apiKey) {
       const base64Str = await fileToBase64(file);
       
@@ -216,33 +216,49 @@
         }]
       };
 
-      // Set to Gemini 3.6 Flash endpoint
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      const models = [
+        "gemini-2.5-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro"
+      ];
 
-      if (!res.ok) {
-        throw new Error(`Gemini API Error ${res.status}`);
-      }
+      for (let model of models) {
+        try {
+          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
 
-      const resData = await res.json();
-      const rawText = resData.candidates[0].content.parts[0].text;
+          if (!res.ok) continue;
 
-      const match = rawText.match(/\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]/);
-      if (match) {
-        return [parseInt(match[1]), parseInt(match[2]), parseInt(match[3]), parseInt(match[4])];
-      } else {
-        const nums = rawText.match(/\d+/g);
-        if (nums && nums.length >= 4) {
-          return nums.slice(0, 4).map(n => parseInt(n));
+          const textRes = await res.text();
+          if (!textRes) continue;
+
+          const resData = JSON.parse(textRes);
+          if (!resData.candidates || !resData.candidates[0]) continue;
+
+          const rawText = resData.candidates[0].content.parts[0].text;
+          const match = rawText.match(/\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]/);
+          
+          if (match) {
+            return [parseInt(match[1]), parseInt(match[2]), parseInt(match[3]), parseInt(match[4])];
+          } else {
+            const nums = rawText.match(/\d+/g);
+            if (nums && nums.length >= 4) {
+              return nums.slice(0, 4).map(n => parseInt(n));
+            }
+          }
+        } catch (e) {
+          console.warn(`Model ${model} failed, trying next...`, e);
         }
       }
-      return [300, 0, 800, 1000]; // Default Fallback Box
+
+      // Default safe crop box if API fails
+      return [300, 0, 800, 1000];
     }
 
-    // Helper: Canvas Crop using Bounding Box Coordinates
+    // Canvas Crop using Bounding Box Coordinates
     function cropImageCanvas(file, coords) {
       return new Promise((resolve) => {
         const img = new Image();
