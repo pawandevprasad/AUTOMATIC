@@ -14,14 +14,6 @@ AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_BUCKET_NAME = os.environ.get("AWS_BUCKET_NAME")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 
-# Initialize AWS S3 Client
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-    region_name=AWS_REGION
-)
-
 @app.route('/')
 def home():
     return render_template('index.html')
@@ -40,7 +32,6 @@ def process_image():
         if not GEMINI_API_KEY:
             return jsonify({'error': 'GEMINI_API_KEY environment variable missing'}), 500
 
-        # Step 1: Gemini REST API Call
         prompt_text = (
             "Detect the main interior or property room photograph inside this screenshot. "
             "Completely ignore status bar, header, floating videos, bottom contact/WhatsApp buttons, and surrounding white spaces. "
@@ -63,9 +54,9 @@ def process_image():
             }
         }
 
-        # Call Gemini REST API directly (using stable endpoint)
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-        res = requests.post(url, json=payload)
+        # Updated Active Gemini Model Endpoint
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
+        res = requests.post(url, json=payload, timeout=25)
         
         if not res.ok:
             return jsonify({'error': f"Gemini API Error: {res.text}"}), 500
@@ -88,10 +79,19 @@ def upload_s3():
         if 'image' not in request.files:
             return jsonify({'error': 'No cropped image received'}), 400
 
+        if not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY or not AWS_BUCKET_NAME:
+            return jsonify({'error': 'S3 Credentials Missing in Render Environment'}), 500
+
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            region_name=AWS_REGION
+        )
+
         cropped_file = request.files['image']
         file_name = f"cropped_{os.urandom(8).hex()}.jpg"
 
-        # Direct Stream Upload to S3
         s3_client.upload_fileobj(
             cropped_file,
             AWS_BUCKET_NAME,
@@ -104,7 +104,7 @@ def upload_s3():
 
     except Exception as e:
         print("S3 Upload Error:", str(e))
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': f"S3 Error: {str(e)}"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
