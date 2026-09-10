@@ -97,9 +97,9 @@
   <h1>Property S3 Pipeline & Gemini JSON Generator</h1>
   <p class="subtitle">Auto-crop images, upload to S3, extract OCR details via Gemini, and generate enforced JSON.</p>
 
-  <!-- STEP 1: Property Images Crop & S3 Upload -->
+  <!-- STEP 1 -->
   <div class="step-container">
-    <div class="step-title">Step 1: Property Images Choose Karein (Auto-Crop & S3 Upload)</div>
+    <div class="step-title">Step 1: Property Images Choose Karein (Gemini Auto-Crop & S3 Upload)</div>
     <input type="file" id="propImages" accept="image/*" multiple style="display: none;">
     <button class="upload-btn" onclick="document.getElementById('propImages').click()">1. Select Property Photos</button>
 
@@ -111,14 +111,14 @@
     </div>
   </div>
 
-  <!-- STEP 2: Detail Screenshots Choose & Generate JSON -->
+  <!-- STEP 2 -->
   <div class="step-container" id="step2Container" style="opacity: 0.5; pointer-events: none;">
     <div class="step-title">Step 2: Detail Screenshots Choose Karein (Gemini OCR JSON Extraction)</div>
     <input type="file" id="detailImages" accept="image/*" multiple style="display: none;">
     <button class="upload-btn" id="btnStep2" onclick="document.getElementById('detailImages').click()">2. Select Detail Screenshots & Generate JSON</button>
   </div>
 
-  <!-- STEP 3: Final Ordered JSON Result -->
+  <!-- STEP 3 -->
   <div class="step-container" id="jsonContainer" style="display: none;">
     <div class="step-title">Final Enforced Serial JSON Result</div>
     <textarea id="jsonOutput" class="json-textarea"></textarea>
@@ -141,7 +141,7 @@
       document.getElementById('allUrlsBox').value = "";
       document.getElementById('actionBar').style.display = "none";
 
-      document.getElementById('status').innerText = `Processing ${files.length} property images...`;
+      document.getElementById('status').innerText = `Gemini AI is cropping ${files.length} images...`;
 
       files.forEach((file, index) => {
         const card = document.createElement('div');
@@ -149,7 +149,7 @@
         card.id = `card_${index}`;
         card.innerHTML = `
           <div class="img-wrapper">
-            <span class="loading-spinner" id="spinner_${index}">Cropping #${index + 1}...</span>
+            <span class="loading-spinner" id="spinner_${index}">Gemini Cropping #${index + 1}...</span>
             <img id="img_${index}" style="display:none;">
           </div>
           <div class="url-box" id="urlBox_${index}" style="display:none;">
@@ -161,33 +161,45 @@
       });
 
       for (let i = 0; i < files.length; i++) {
-        document.getElementById('status').innerText = `Cropping & Uploading image ${i + 1} of ${files.length}...`;
+        document.getElementById('status').innerText = `Processing image ${i + 1} of ${files.length}...`;
         
         try {
-          // Pixel Scanning for Precision Crop
-          const croppedBlob = await precisionScanAndCrop(files[i]);
+          // 1. Get Gemini AI Bounding Box
+          const formData = new FormData();
+          formData.append('image', files[i]);
 
-          const s3FormData = new FormData();
-          s3FormData.append('image', croppedBlob);
+          const cropRes = await fetch('/api/detect-crop-box', { method: 'POST', body: formData });
+          const cropData = await cropRes.json();
 
-          const uploadRes = await fetch('/api/upload-s3-single', { method: 'POST', body: s3FormData });
-          const uploadData = await uploadRes.json();
+          if (cropData.success && cropData.coords) {
+            // 2. Exact Gemini Bounding Box Crop
+            const croppedBlob = await cropImageWithGeminiCoords(files[i], cropData.coords);
 
-          if (uploadData.success) {
-            document.getElementById(`spinner_${i}`).style.display = 'none';
-            
-            const imgElem = document.getElementById(`img_${i}`);
-            imgElem.src = uploadData.url;
-            imgElem.style.display = 'block';
+            // 3. Upload to S3
+            const s3FormData = new FormData();
+            s3FormData.append('image', croppedBlob);
 
-            const urlInput = document.getElementById(`urlInput_${i}`);
-            urlInput.value = uploadData.url;
-            document.getElementById(`urlBox_${i}`).style.display = 'flex';
+            const uploadRes = await fetch('/api/upload-s3-single', { method: 'POST', body: s3FormData });
+            const uploadData = await uploadRes.json();
 
-            globalS3Urls.push(uploadData.url);
-            document.getElementById('allUrlsBox').value = globalS3Urls.join('\n');
+            if (uploadData.success) {
+              document.getElementById(`spinner_${i}`).style.display = 'none';
+              
+              const imgElem = document.getElementById(`img_${i}`);
+              imgElem.src = uploadData.url;
+              imgElem.style.display = 'block';
+
+              const urlInput = document.getElementById(`urlInput_${i}`);
+              urlInput.value = uploadData.url;
+              document.getElementById(`urlBox_${i}`).style.display = 'flex';
+
+              globalS3Urls.push(uploadData.url);
+              document.getElementById('allUrlsBox').value = globalS3Urls.join('\n');
+            } else {
+              document.getElementById(`spinner_${i}`).innerText = uploadData.error || `S3 Error #${i + 1}`;
+            }
           } else {
-            document.getElementById(`spinner_${i}`).innerText = uploadData.error || `S3 Error #${i + 1}`;
+            document.getElementById(`spinner_${i}`).innerText = cropData.error || `Gemini Crop Error #${i + 1}`;
           }
         } catch (err) {
           console.error(err);
@@ -195,7 +207,7 @@
         }
       }
 
-      document.getElementById('status').innerText = `Saari ${files.length} images crop aur S3 par upload ho gayi hain! Ab Step 2 par detail screenshots select karein.`;
+      document.getElementById('status').innerText = `Saari ${files.length} images Gemini se perfect crop ho kar S3 par upload ho gayi hain! Ab Step 2 par screenshots chunie.`;
       document.getElementById('actionBar').style.display = "flex";
       
       const step2 = document.getElementById('step2Container');
@@ -255,70 +267,29 @@
       }
     }
 
-    // 🎯 Precision Auto-Detection & Cropper for Screenshots
-    function precisionScanAndCrop(file) {
+    // Exact Crop using Gemini Coordinates [ymin, xmin, ymax, xmax]
+    function cropImageWithGeminiCoords(file, coords) {
       return new Promise((resolve) => {
         const img = new Image();
         img.src = URL.createObjectURL(file);
         img.onload = () => {
           const w = img.width, h = img.height;
 
+          const ymin = Math.max(0, Math.floor((coords[0] / 1000) * h));
+          const xmin = Math.max(0, Math.floor((coords[1] / 1000) * w));
+          const ymax = Math.min(h, Math.ceil((coords[2] / 1000) * h));
+          const xmax = Math.min(w, Math.ceil((coords[3] / 1000) * w));
+
+          const cropW = xmax - xmin;
+          const cropH = ymax - ymin;
+
           const canvas = document.createElement('canvas');
-          canvas.width = w;
-          canvas.height = h;
+          canvas.width = cropW;
+          canvas.height = cropH;
           const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0);
 
-          const imageData = ctx.getImageData(0, 0, w, h);
-          const data = imageData.data;
-
-          let top = h, bottom = 0, left = w, right = 0;
-
-          // Scan pixels line by line
-          for (let y = 0; y < h; y += 4) {
-            for (let x = 0; x < w; x += 4) {
-              const i = (y * w + x) * 4;
-              const r = data[i], g = data[i+1], b = data[i+2];
-
-              // Filter Pure White Margins (>240) and Top Status Bar Area
-              const isWhiteSpace = (r > 235 && g > 235 && b > 235);
-              const isTopStatusBar = (y < h * 0.05); 
-              
-              // Filter PiP Floating Video Area (Top Right corner)
-              const isPipVideo = (y < h * 0.25) && (x > w * 0.45);
-
-              if (!isWhiteSpace && !isTopStatusBar && !isPipVideo) {
-                if (y < top) top = y;
-                if (y > bottom) bottom = y;
-                if (x < left) left = x;
-                if (x > right) right = x;
-              }
-            }
-          }
-
-          // Safety Fallback Bounds
-          if (top >= bottom || left >= right) {
-            top = Math.floor(h * 0.32);
-            bottom = Math.floor(h * 0.68);
-            left = 0;
-            right = w;
-          }
-
-          const cropWidth = right - left;
-          const cropHeight = bottom - top;
-
-          const cropCanvas = document.createElement('canvas');
-          cropCanvas.width = cropWidth;
-          cropCanvas.height = cropHeight;
-          const cropCtx = cropCanvas.getContext('2d');
-
-          cropCtx.drawImage(
-            img,
-            left, top, cropWidth, cropHeight,
-            0, 0, cropWidth, cropHeight
-          );
-
-          cropCanvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.95);
+          ctx.drawImage(img, xmin, ymin, cropW, cropH, 0, 0, cropW, cropH);
+          canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.95);
         };
       });
     }
