@@ -1,5 +1,8 @@
 Flask
 boto3
+pymongo
+google-genai
 requests
 gunicorn
 python-dotenv
+Pillow
