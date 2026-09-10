@@ -4,7 +4,6 @@ import json
 import time
 import base64
 import boto3
-import requests
 from flask import Flask, request, jsonify, render_template
 from pymongo import MongoClient
 from google import genai
@@ -49,7 +48,7 @@ s3_client = boto3.client(
     region_name=AWS_REGION
 )
 
-# Gemini API Client
+# Gemini Official GenAI Client
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
@@ -256,15 +255,18 @@ def detect_crop_box():
         if 'image' not in request.files:
             return jsonify({'success': False, 'error': 'No image provided'}), 400
 
+        if not ai_client:
+            return jsonify({'success': False, 'error': 'GEMINI_API_KEY environment variable missing on server'}), 500
+
         file = request.files['image']
         
-        # Image optimization for fast Gemini response
+        # Optimize Image Size to avoid API timeouts
         img = Image.open(file.stream).convert("RGB")
         img.thumbnail((800, 800))
         
         byte_arr = io.BytesIO()
         img.save(byte_arr, format='JPEG', quality=85)
-        base64_image = base64.b64encode(byte_arr.getvalue()).decode('utf-8')
+        image_bytes = byte_arr.getvalue()
 
         prompt_text = (
             "Detect the main interior or property room photograph inside this screenshot. "
@@ -272,47 +274,27 @@ def detect_crop_box():
             "Return ONLY a JSON array with 4 integer coordinates [ymin, xmin, ymax, xmax] normalized from 0 to 1000."
         )
 
-        payload = {
-            "contents": [{
-                "parts": [
-                    {"text": prompt_text},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": base64_image}}
-                ]
-            }],
-            "generationConfig": {
-                "response_mime_type": "application/json",
-                "response_schema": {
-                    "type": "ARRAY",
-                    "items": {"type": "INTEGER"}
-                }
-            }
-        }
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg'),
+                prompt_text
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
-        
-        # Robust Retry Mechanism with 60s timeout
-        res = None
-        last_err = None
-        for attempt in range(3):
-            try:
-                res = requests.post(url, json=payload, timeout=60)
-                if res.ok:
-                    break
-            except Exception as e:
-                last_err = e
-                time.sleep(2)
+        if not response or not response.text:
+            return jsonify({'success': False, 'error': 'Empty response from Gemini Model'}), 500
 
-        if not res or not res.ok:
-            err_msg = res.text if res else str(last_err)
-            return jsonify({'success': False, 'error': f"Gemini API Error: {err_msg}"}), 500
-
-        res_data = res.json()
-        text_content = res_data['candidates'][0]['content']['parts'][0]['text']
-        coords = json.loads(text_content)
+        cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
+        coords = json.loads(cleaned_text)
 
         return jsonify({'success': True, 'coords': coords})
 
     except Exception as e:
+        print("Crop detection error:", str(e))
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/upload-s3-single', methods=['POST'])
@@ -352,7 +334,7 @@ def extract_json():
             s3_urls = []
 
         if not ai_client:
-            return jsonify({"success": False, "error": "GEMINI_API_KEY is not configured on server"}), 500
+            return jsonify({"success": False, "error": "GEMINI_API_KEY environment variable missing on server"}), 500
 
         prompt_text = """
 Read all uploaded property screenshots with extreme OCR attention and extract details strictly into JSON:
@@ -396,7 +378,7 @@ CRITICAL EXTRACTION RULES:
                 continue
 
         response = ai_client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-2.5-flash',
             contents=contents
         )
 
@@ -439,4 +421,4 @@ def submit_to_db():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
-        
+    
