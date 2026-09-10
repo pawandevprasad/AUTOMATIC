@@ -130,7 +130,6 @@
   <script>
     let globalS3Urls = [];
 
-    // Step 1: Gemini AI Detection & Frontend Canvas Cropping
     document.getElementById('propImages').addEventListener('change', async (e) => {
       const files = Array.from(e.target.files);
       if (!files || files.length === 0) return;
@@ -164,7 +163,6 @@
         document.getElementById('status').innerText = `Gemini AI is cropping image ${i + 1} of ${files.length}...`;
         
         try {
-          // 1. Fetch exact Bounding Box from Gemini API
           const formData = new FormData();
           formData.append('image', files[i]);
 
@@ -172,10 +170,8 @@
           const cropData = await cropRes.json();
 
           if (cropData.success && cropData.coords) {
-            // 2. Crop strictly the Room Photo on Frontend Canvas
             const croppedBlob = await cropWithGemini(files[i], cropData.coords);
 
-            // 3. Upload perfectly cropped Room Image to S3
             const s3FormData = new FormData();
             s3FormData.append('image', croppedBlob);
 
@@ -215,7 +211,6 @@
       step2.style.pointerEvents = "auto";
     });
 
-    // Step 2: Detail Screenshots & Gemini OCR JSON Parsing
     document.getElementById('detailImages').addEventListener('change', async (e) => {
       const files = Array.from(e.target.files);
       if (!files || files.length === 0) return;
@@ -251,7 +246,6 @@
       }
     });
 
-    // Submit JSON to Mongo DB
     async function submitToDatabase() {
       const rawJson = document.getElementById('jsonOutput').value;
       try {
@@ -267,7 +261,6 @@
       }
     }
 
-    // Exact Canvas Crop using Gemini Coordinates [ymin, xmin, ymax, xmax]
     function cropWithGemini(file, coords) {
       return new Promise((resolve) => {
         const img = new Image();
@@ -295,7 +288,6 @@
       });
     }
 
-    // Silent Copy Helper
     function silentCopy(text) {
       if (navigator.clipboard && window.isSecureContext) {
         return navigator.clipboard.writeText(text);
@@ -335,3 +327,4 @@
   </script>
 </body>
 </html>
+
