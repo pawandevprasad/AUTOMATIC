@@ -1,7 +1,6 @@
 import os
 import io
 import json
-import time
 import base64
 import boto3
 import requests
@@ -237,7 +236,7 @@ def process_and_enforce_rules(data, s3_urls):
         },
         "amenities": data.get("amenities", []) if isinstance(data, dict) and isinstance(data.get("amenities"), list) else [],
         "media": {
-            "images": s3_urls,  # Directly map serial S3 URLs
+            "images": s3_urls,
             "ai_short_video_url": med.get("ai_short_video_url", "na")
         },
         "created_at": created_at_val
@@ -250,7 +249,6 @@ def process_and_enforce_rules(data, s3_urls):
 def index():
     return render_template('index.html', db_name=DB_NAME, collection_name=COLLECTION_NAME)
 
-# Endpoint 1: Gemini bounding box detection for auto-crop
 @app.route('/api/detect-crop-box', methods=['POST'])
 def detect_crop_box():
     try:
@@ -291,14 +289,14 @@ def detect_crop_box():
             return jsonify({'success': False, 'error': f"Gemini API Error: {res.text}"}), 500
 
         res_data = res.json()
-        coords = json.loads(res_data['candidates'][0]['content']['parts'][0]['text'])
+        text_content = res_data['candidates'][0]['content']['parts'][0]['text']
+        coords = json.loads(text_content)
 
         return jsonify({'success': True, 'coords': coords})
 
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-# Endpoint 2: Direct stream upload of cropped image to AWS S3
 @app.route('/api/upload-s3-single', methods=['POST'])
 def upload_s3_single():
     try:
@@ -321,17 +319,23 @@ def upload_s3_single():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-# Endpoint 3: OCR Extraction and Enforce Rules into Structured Serial JSON
 @app.route('/api/extract-json', methods=['POST'])
 def extract_json():
-    if 'data_images' not in request.files:
-        return jsonify({"success": False, "error": "No detail screenshots provided"}), 400
-    
-    data_files = request.files.getlist('data_images')
-    s3_urls_raw = request.form.get('s3_urls', '[]')
-    s3_urls = json.loads(s3_urls_raw)
-
     try:
+        if 'data_images' not in request.files:
+            return jsonify({"success": False, "error": "No detail screenshots provided"}), 400
+        
+        data_files = request.files.getlist('data_images')
+        s3_urls_raw = request.form.get('s3_urls', '[]')
+        
+        try:
+            s3_urls = json.loads(s3_urls_raw)
+        except Exception:
+            s3_urls = []
+
+        if not ai_client:
+            return jsonify({"success": False, "error": "GEMINI_API_KEY is not configured on server"}), 500
+
         prompt_text = """
 Read all uploaded property screenshots with extreme OCR attention and extract details strictly into JSON:
 
@@ -354,20 +358,24 @@ CRITICAL EXTRACTION RULES:
         contents = [prompt_text]
 
         for file in data_files:
-            img = Image.open(file.stream)
-            img = img.convert("RGB")
-            img.thumbnail((1200, 1200))
-            
-            byte_arr = io.BytesIO()
-            img.save(byte_arr, format='JPEG', quality=90)
-            image_bytes = byte_arr.getvalue()
+            try:
+                img = Image.open(file.stream)
+                img = img.convert("RGB")
+                img.thumbnail((1200, 1200))
+                
+                byte_arr = io.BytesIO()
+                img.save(byte_arr, format='JPEG', quality=90)
+                image_bytes = byte_arr.getvalue()
 
-            contents.append(
-                types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type='image/jpeg'
+                contents.append(
+                    types.Part.from_bytes(
+                        data=image_bytes,
+                        mime_type='image/jpeg'
+                    )
                 )
-            )
+            except Exception as img_err:
+                print(f"Image load error: {img_err}")
+                continue
 
         response = ai_client.models.generate_content(
             model='gemini-3.6-flash',
@@ -375,24 +383,27 @@ CRITICAL EXTRACTION RULES:
         )
 
         if not response or not response.text:
-            raise Exception("Empty response from Gemini API.")
+            return jsonify({"success": False, "error": "Empty response from Gemini API"}), 500
 
         cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
-        parsed_json = json.loads(cleaned_text)
+        
+        try:
+            parsed_json = json.loads(cleaned_text)
+        except Exception:
+            parsed_json = {}
 
-        # Enforce exact Rules and attach serial S3 URLs
         final_ordered_json = process_and_enforce_rules(parsed_json, s3_urls)
 
         return jsonify({"success": True, "data": final_ordered_json}), 200
 
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        print(f"Server Exception in extract_json: {str(e)}")
+        return jsonify({"success": False, "error": f"Server Error: {str(e)}"}), 500
 
-# Endpoint 4: Database submission
 @app.route('/api/submit-to-db', methods=['POST'])
 def submit_to_db():
     try:
-        req_data = request.get_json()
+        req_data = request.get_json() or {}
         raw_text = req_data.get('json_data', '')
         
         parsed_data = json.loads(raw_text)
@@ -410,3 +421,4 @@ def submit_to_db():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
+    
