@@ -59,7 +59,7 @@ if AWS_ACCESS_KEY and AWS_SECRET_KEY:
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# Strictly defined models list as requested
+# Sequential fallback models list as requested
 MODELS_FALLBACK_LIST = [
     "gemini-3.5-flash-lite",
     "gemini-3.6-flash",
@@ -293,7 +293,6 @@ def detect_crop_box():
         res = None
         last_error_msg = "No response"
 
-        # Sequential Fallback Mechanism: 3.5 Flash-Lite -> 3.6 Flash -> 3.1 Pro
         for model_name in MODELS_FALLBACK_LIST:
             gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
             try:
@@ -415,7 +414,6 @@ CRITICAL EXTRACTION RULES:
         res = None
         last_error_msg = "No response"
 
-        # Sequential Fallback Mechanism: 3.5 Flash-Lite -> 3.6 Flash -> 3.1 Pro
         for model_name in MODELS_FALLBACK_LIST:
             gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model_name}:generateContent?key={GEMINI_API_KEY}"
             try:
@@ -426,5 +424,46 @@ CRITICAL EXTRACTION RULES:
                 else:
                     last_error_msg = f"{model_name} ({temp_res.status_code}): {temp_res.text[:100]}"
             except Exception as e:
-                last_error_msg
+                last_error_msg = f"{model_name} Exception: {str(e)}"
+
+        if not res or not res.ok:
+            return jsonify({"success": False, "error": f"Gemini API Extraction Fallback Failed: {last_error_msg}"}), 500
+
+        res_data = res.json()
+        raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
+        cleaned_text = raw_text.replace("```json", "").replace("```", "").strip()
+
+        try:
+            parsed_json = json.loads(cleaned_text)
+        except Exception:
+            parsed_json = {}
+
+        final_ordered_json = process_and_enforce_rules(parsed_json, s3_urls)
+        return jsonify({"success": True, "data": final_ordered_json}), 200
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/submit-to-db', methods=['POST'])
+def submit_to_db():
+    try:
+        req_data = request.get_json() or {}
+        raw_text = req_data.get('json_data', '')
+        
+        parsed_data = json.loads(raw_text)
+        if collection is not None:
+            result = collection.insert_one(parsed_data)
+            return jsonify({
+                "success": True, 
+                "message": f"Data successfully submitted to Database! ID: {str(result.inserted_id)}"
+            }), 200
+        else:
+            return jsonify({"success": True, "message": "Database not configured, but JSON is valid."}), 200
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
     
