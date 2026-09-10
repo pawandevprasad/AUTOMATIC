@@ -1,10 +1,14 @@
 import os
 import io
 import json
+import time
 import base64
 import boto3
 import requests
 from flask import Flask, request, jsonify, render_template
+from pymongo import MongoClient
+from google import genai
+from google.genai import types
 from PIL import Image
 
 app = Flask(__name__, template_folder='templates')
@@ -14,11 +18,9 @@ MONGO_URI = os.environ.get("MONGO_URI", "")
 DB_NAME = "property_database"
 COLLECTION_NAME = "properties"
 
-# Safe MongoDB Connection
 collection = None
 if MONGO_URI:
     try:
-        from pymongo import MongoClient
         client_db = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
         db = client_db[DB_NAME]
         collection = db[COLLECTION_NAME]
@@ -45,7 +47,6 @@ AWS_SECRET_KEY = (
 
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 
-# Safe S3 Client
 s3_client = None
 if AWS_ACCESS_KEY and AWS_SECRET_KEY:
     try:
@@ -58,7 +59,6 @@ if AWS_ACCESS_KEY and AWS_SECRET_KEY:
     except Exception as s3_err:
         print(f"S3 Warning: {s3_err}")
 
-# Gemini API Key
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 
@@ -259,7 +259,61 @@ def index():
     try:
         return render_template('index.html', db_name=DB_NAME, collection_name=COLLECTION_NAME)
     except Exception as e:
-        return f"Template Render Error: {str(e)}. Make sure 'index.html' is inside 'templates/' folder.", 500
+        return f"Template Render Error: {str(e)}", 500
+
+# 🌟 Gemini AI-Powered Crop Detection (Fast Light Image Payload)
+@app.route('/api/detect-crop-box', methods=['POST'])
+def detect_crop_box():
+    try:
+        if 'image' not in request.files:
+            return jsonify({'success': False, 'error': 'No image provided'}), 400
+
+        file = request.files['image']
+        
+        # Super-Light Weight Resize (Fast API Response)
+        img = Image.open(file.stream).convert("RGB")
+        img.thumbnail((600, 600))
+        
+        byte_arr = io.BytesIO()
+        img.save(byte_arr, format='JPEG', quality=75)
+        base64_str = base64.b64encode(byte_arr.getvalue()).decode('utf-8')
+
+        prompt_text = (
+            "Detect the main interior or property room photograph inside this screenshot. "
+            "Completely ignore top status bar, header X buttons, floating video windows, bottom WhatsApp/contact buttons, and white spaces. "
+            "Return strictly 4 integer coordinates [ymin, xmin, ymax, xmax] normalized from 0 to 1000."
+        )
+
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt_text},
+                    {"inline_data": {"mime_type": "image/jpeg", "data": base64_str}}
+                ]
+            }],
+            "generationConfig": {
+                "response_mime_type": "application/json",
+                "response_schema": {
+                    "type": "ARRAY",
+                    "items": {"type": "INTEGER"}
+                }
+            }
+        }
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
+        res = requests.post(url, json=payload, timeout=20)
+
+        if not res.ok:
+            return jsonify({'success': False, 'error': f"Gemini API Error: {res.text}"}), 500
+
+        res_data = res.json()
+        raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
+        coords = json.loads(raw_text)
+
+        return jsonify({'success': True, 'coords': coords})
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/upload-s3-single', methods=['POST'])
 def upload_s3_single():
@@ -268,7 +322,7 @@ def upload_s3_single():
             return jsonify({"success": False, "error": "No image provided"}), 400
         
         if not s3_client:
-            return jsonify({"success": False, "error": "AWS S3 Credentials missing in environment variables"}), 500
+            return jsonify({"success": False, "error": "S3 Credentials missing"}), 500
 
         file = request.files['image']
         filename = f"cropped_{os.urandom(8).hex()}.jpg"
@@ -284,7 +338,7 @@ def upload_s3_single():
         return jsonify({"success": True, "url": file_url}), 200
 
     except Exception as e:
-        return jsonify({"success": False, "error": f"S3 Upload Failed: {str(e)}"}), 500
+        return jsonify({"success": False, "error": f"S3 Upload Error: {str(e)}"}), 500
 
 @app.route('/api/extract-json', methods=['POST'])
 def extract_json():
@@ -301,7 +355,7 @@ def extract_json():
             s3_urls = []
 
         if not GEMINI_API_KEY:
-            return jsonify({"success": False, "error": "GEMINI_API_KEY missing in environment variables"}), 500
+            return jsonify({"success": False, "error": "GEMINI_API_KEY missing"}), 500
 
         prompt_text = """
 Read all uploaded property screenshots with extreme OCR attention and extract details strictly into JSON:
@@ -340,9 +394,8 @@ CRITICAL EXTRACTION RULES:
                     }
                 })
             except Exception as img_err:
-                print(f"Image processing warning: {img_err}")
+                print(f"Image warning: {img_err}")
 
-        # REST API Call to Gemini 3.6 Flash
         gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=){GEMINI_API_KEY}"
         res = requests.post(gemini_url, json={"contents": [{"parts": parts}]}, timeout=45)
 
@@ -362,8 +415,7 @@ CRITICAL EXTRACTION RULES:
         return jsonify({"success": True, "data": final_ordered_json}), 200
 
     except Exception as e:
-        print(f"Server Exception in extract_json: {str(e)}")
-        return jsonify({"success": False, "error": f"Server Exception: {str(e)}"}), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/submit-to-db', methods=['POST'])
 def submit_to_db():
@@ -386,4 +438,4 @@ def submit_to_db():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-            
+    
