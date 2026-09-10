@@ -1,10 +1,10 @@
 import os
 import io
 import json
-import re
 import base64
 import boto3
 import requests
+import re
 from flask import Flask, request, jsonify, render_template
 from PIL import Image
 
@@ -192,6 +192,7 @@ def process_and_enforce_rules(data, s3_urls):
     if not created_at_val or str(created_at_val).lower() in ["na", "none", "null"]:
         created_at_val = "few years"
 
+    # STRICT SERIAL ORDERED OUTPUT
     return {
         "user_id": data.get("user_id", "ADMIN"),
         "posted_by_type": data.get("posted_by_type", "ADMIN"),
@@ -258,7 +259,7 @@ def index():
     except Exception as e:
         return f"Template Render Error: {str(e)}", 500
 
-# 🌟 Gemini 3.6 Flash - Safe Bounding Box Extraction Endpoint
+# 🌟 Safe Bounding Box Extraction Endpoint with Native Regex Parsing
 @app.route('/api/detect-crop-box', methods=['POST'])
 def detect_crop_box():
     try:
@@ -276,11 +277,12 @@ def detect_crop_box():
         img.save(byte_arr, format='JPEG', quality=85)
         base64_str = base64.b64encode(byte_arr.getvalue()).decode('utf-8')
 
+        # Precise plain text prompt to avoid JSON Schema conflict
         prompt_text = (
-            "Detect the bounding box of the main room or property photograph in this screenshot. "
-            "Ignore top status bar, floating video, bottom buttons, and white margins. "
-            "Return EXACTLY four integers inside square brackets like [ymin, xmin, ymax, xmax] normalized from 0 to 1000. "
-            "Do not write any explanation, markdown, or extra characters. Example: [250, 50, 750, 950]"
+            "Detect the bounding box of the main interior room or property photograph in this screenshot. "
+            "Do NOT include top status bar, header bars, contact buttons, ads, or surrounding white spaces. "
+            "Return EXACTLY four normalized integer coordinates in square brackets like [ymin, xmin, ymax, xmax] from 0 to 1000. "
+            "Write ONLY the numbers inside brackets, nothing else. Example: [250, 50, 750, 950]"
         )
 
         payload = {
@@ -292,10 +294,14 @@ def detect_crop_box():
             }]
         }
 
-        # Latest Gemini 3.6 Flash Endpoint
-        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
-        
+        # Original stable endpoint (v1beta for robust structure parsing)
+        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         res = requests.post(gemini_url, json=payload, timeout=25)
+
+        if not res.ok:
+            # Fallback to standard 2.5 endpoint if 2.0 is removed
+            fallback_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+            res = requests.post(fallback_url, json=payload, timeout=25)
 
         if not res.ok:
             return jsonify({'success': False, 'error': f"Gemini API Error: {res.text}"}), 500
@@ -303,17 +309,13 @@ def detect_crop_box():
         res_data = res.json()
         raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
         
-        # Regex to safely find [ymin, xmin, ymax, xmax]
+        # Safe coordinates extraction using Regex (Ignores any surrounding garbage text)
         match = re.search(r'\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]', raw_text)
         if match:
             coords = [int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4))]
         else:
-            # Fallback if AI sends plain numbers
-            nums = [int(n) for n in re.findall(r'\d+', raw_text)]
-            if len(nums) >= 4:
-                coords = nums[:4]
-            else:
-                coords = [250, 0, 750, 1000] # Safe fallback
+            # Fallback coordinates if detection completely fails
+            coords = [250, 0, 750, 1000]
 
         return jsonify({'success': True, 'coords': coords})
 
@@ -401,11 +403,22 @@ CRITICAL EXTRACTION RULES:
             except Exception as img_err:
                 print(f"Image warning: {img_err}")
 
-        gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=){GEMINI_API_KEY}"
-        res = requests.post(gemini_url, json={"contents": [{"parts": parts}]}, timeout=45)
+        # Multiple Model Failover for Extraction
+        models = ["gemini-2.5-flash", "gemini-1.5-flash"]
+        res = None
 
-        if not res.ok:
-            return jsonify({"success": False, "error": f"Gemini API Error: {res.text}"}), 500
+        for m in models:
+            gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){m}:generateContent?key={GEMINI_API_KEY}"
+            try:
+                res = requests.post(gemini_url, json={"contents": [{"parts": parts}]}, timeout=40)
+                if res.ok:
+                    break
+            except Exception:
+                pass
+
+        if not res or not res.ok:
+            err_msg = res.text if res else "Failed to contact Gemini API"
+            return jsonify({"success": False, "error": f"Gemini API Error: {err_msg}"}), 500
 
         res_data = res.json()
         raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
@@ -444,4 +457,4 @@ def submit_to_db():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-    
+            
