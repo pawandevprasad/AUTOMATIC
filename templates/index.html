@@ -141,7 +141,7 @@
       document.getElementById('allUrlsBox').value = "";
       document.getElementById('actionBar').style.display = "none";
 
-      document.getElementById('status').innerText = `Gemini AI is cropping ${files.length} images...`;
+      document.getElementById('status').innerText = `Gemini AI 3.6 is cropping ${files.length} images...`;
 
       files.forEach((file, index) => {
         const card = document.createElement('div');
@@ -161,10 +161,10 @@
       });
 
       for (let i = 0; i < files.length; i++) {
-        document.getElementById('status').innerText = `Gemini AI is cropping image ${i + 1} of ${files.length}...`;
+        document.getElementById('status').innerText = `Gemini AI 3.6 is cropping image ${i + 1} of ${files.length}...`;
         
         try {
-          // 1. Get Original Gemini Bounding Box
+          // 1. Get Gemini 3.6 Bounding Box Coordinates
           const formData = new FormData();
           formData.append('image', files[i]);
 
@@ -172,7 +172,7 @@
           const cropData = await cropRes.json();
 
           if (cropData.success && cropData.coords) {
-            // 2. Crop using exact Gemini Coordinates
+            // 2. Crop using Gemini Coordinates
             const croppedBlob = await cropWithGemini(files[i], cropData.coords);
 
             // 3. Upload to S3
@@ -207,7 +207,7 @@
         }
       }
 
-      document.getElementById('status').innerText = `Saari ${files.length} images Gemini se crop ho kar S3 par upload ho gayi hain! Ab Step 2 par detail screenshots select karein.`;
+      document.getElementById('status').innerText = `Saari ${files.length} images Gemini 3.6 se crop ho kar S3 par upload ho gayi hain! Ab Step 2 par screenshots select karein.`;
       document.getElementById('actionBar').style.display = "flex";
       
       const step2 = document.getElementById('step2Container');
