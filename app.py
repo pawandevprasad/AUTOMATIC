@@ -51,13 +51,20 @@ if AWS_ACCESS_KEY and AWS_SECRET_KEY:
         s3_client = boto3.client(
             's3',
             aws_access_key_id=AWS_ACCESS_KEY,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            aws_secret_access_key=AWS_SECRET_KEY,
             region_name=AWS_REGION
         )
     except Exception as s3_err:
         print(f"S3 Warning: {s3_err}")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
+# Strictly defined models list as requested
+MODELS_FALLBACK_LIST = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.1-pro"
+]
 
 
 # --- HELPER FUNCTION: Enforce Rules & Logic ---
@@ -283,26 +290,32 @@ def detect_crop_box():
             }]
         }
 
-        # Dynamic Endpoint for Gemini Vision API Call
-        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-        
-        try:
-            res = requests.post(gemini_url, json=payload, timeout=25)
-        except Exception as req_err:
-            return jsonify({'success': False, 'error': f"Request Exception: {str(req_err)}"}), 500
+        res = None
+        last_error_msg = "No response"
 
-        if not res.ok:
-            # Direct Error Response from Google API
-            return jsonify({'success': False, 'error': f"API Error ({res.status_code}): {res.text[:150]}"}), 500
+        # Sequential Fallback Mechanism: 3.5 Flash-Lite -> 3.6 Flash -> 3.1 Pro
+        for model_name in MODELS_FALLBACK_LIST:
+            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+            try:
+                temp_res = requests.post(gemini_url, json=payload, timeout=20)
+                if temp_res.ok:
+                    res = temp_res
+                    break
+                else:
+                    last_error_msg = f"{model_name} ({temp_res.status_code}): {temp_res.text[:100]}"
+            except Exception as e:
+                last_error_msg = f"{model_name} Exception: {str(e)}"
+
+        if not res or not res.ok:
+            return jsonify({'success': False, 'error': f"Gemini API Fallback Failed: {last_error_msg}"}), 500
 
         res_data = res.json()
         
         try:
             raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
         except (KeyError, IndexError):
-            return jsonify({'success': False, 'error': "Invalid AI response structure"}), 500
+            return jsonify({'success': False, 'error': "Invalid response structure from Gemini"}), 500
 
-        # Extract coordinates using Regex
         match = re.search(r'\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]', raw_text)
         if match:
             coords = [int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4))]
@@ -399,47 +412,19 @@ CRITICAL EXTRACTION RULES:
             except Exception as img_err:
                 print(f"Image warning: {img_err}")
 
-        gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=){GEMINI_API_KEY}"
-        res = requests.post(gemini_url, json={"contents": [{"parts": parts}]}, timeout=45)
+        res = None
+        last_error_msg = "No response"
 
-        if not res.ok:
-            return jsonify({"success": False, "error": f"Gemini API Error: {res.text[:150]}"}), 500
-
-        res_data = res.json()
-        raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
-        cleaned_text = raw_text.replace("```json", "").replace("```", "").strip()
-
-        try:
-            parsed_json = json.loads(cleaned_text)
-        except Exception:
-            parsed_json = {}
-
-        final_ordered_json = process_and_enforce_rules(parsed_json, s3_urls)
-        return jsonify({"success": True, "data": final_ordered_json}), 200
-
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/api/submit-to-db', methods=['POST'])
-def submit_to_db():
-    try:
-        req_data = request.get_json() or {}
-        raw_text = req_data.get('json_data', '')
-        
-        parsed_data = json.loads(raw_text)
-        if collection is not None:
-            result = collection.insert_one(parsed_data)
-            return jsonify({
-                "success": True, 
-                "message": f"Data successfully submitted to Database! ID: {str(result.inserted_id)}"
-            }), 200
-        else:
-            return jsonify({"success": True, "message": "Database not configured, but JSON is valid."}), 200
-
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+        # Sequential Fallback Mechanism: 3.5 Flash-Lite -> 3.6 Flash -> 3.1 Pro
+        for model_name in MODELS_FALLBACK_LIST:
+            gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model_name}:generateContent?key={GEMINI_API_KEY}"
+            try:
+                temp_res = requests.post(gemini_url, json={"contents": [{"parts": parts}]}, timeout=45)
+                if temp_res.ok:
+                    res = temp_res
+                    break
+                else:
+                    last_error_msg = f"{model_name} ({temp_res.status_code}): {temp_res.text[:100]}"
+            except Exception as e:
+                last_error_msg
     
