@@ -1,11 +1,9 @@
 import os
-import io
 import json
+import base64
 import boto3
+import requests
 from flask import Flask, request, jsonify, render_template
-from PIL import Image
-from google import genai
-from google.genai import types
 
 app = Flask(__name__, template_folder='.')
 
@@ -15,11 +13,6 @@ AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_BUCKET_NAME = os.environ.get("AWS_BUCKET_NAME")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
-
-# Initialize New Google GenAI Client
-gemini_client = None
-if GEMINI_API_KEY:
-    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Initialize AWS S3 Client
 s3_client = boto3.client(
@@ -41,63 +34,76 @@ def process_image():
 
         file = request.files['image']
         image_bytes = file.read()
-        pil_img = Image.open(io.BytesIO(image_bytes))
-        width, height = pil_img.size
+        mime_type = file.mimetype or 'image/jpeg'
+        base64_image = base64.b64encode(image_bytes).decode('utf-8')
 
-        if not gemini_client:
+        if not GEMINI_API_KEY:
             return jsonify({'error': 'GEMINI_API_KEY environment variable missing'}), 500
 
-        # Step 1: Gemini API call using official google-genai SDK
-        prompt_text = """
-        Detect the main interior or property room photograph inside this screenshot.
-        Completely ignore status bar, header, floating videos, bottom contact/WhatsApp buttons, and surrounding white spaces.
-        Return ONLY a JSON array with 4 integer coordinates [ymin, xmin, ymax, xmax] normalized from 0 to 1000.
-        Example output: [300, 0, 700, 1000]
-        """
-
-        response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[pil_img, prompt_text],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
+        # Step 1: Gemini REST API Call
+        prompt_text = (
+            "Detect the main interior or property room photograph inside this screenshot. "
+            "Completely ignore status bar, header, floating videos, bottom contact/WhatsApp buttons, and surrounding white spaces. "
+            "Return ONLY a JSON array with 4 integer coordinates [ymin, xmin, ymax, xmax] normalized from 0 to 1000."
         )
 
-        clean_text = response.text.strip()
-        coords = json.loads(clean_text)
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt_text},
+                    {"inline_data": {"mime_type": mime_type, "data": base64_image}}
+                ]
+            }],
+            "generationConfig": {
+                "response_mime_type": "application/json",
+                "response_schema": {
+                    "type": "ARRAY",
+                    "items": {"type": "INTEGER"}
+                }
+            }
+        }
 
-        # Scale normalized coordinates to actual pixels
-        ymin = max(0, int((coords[0] / 1000) * height))
-        xmin = max(0, int((coords[1] / 1000) * width))
-        ymax = min(height, int((coords[2] / 1000) * height))
-        xmax = min(width, int((coords[3] / 1000) * width))
+        # Call Gemini REST API directly (using stable endpoint)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        res = requests.post(url, json=payload)
+        
+        if not res.ok:
+            return jsonify({'error': f"Gemini API Error: {res.text}"}), 500
 
-        # Step 2: Crop Image
-        cropped_img = pil_img.crop((xmin, ymin, xmax, ymax))
+        res_data = res.json()
+        coords = json.loads(res_data['candidates'][0]['content']['parts'][0]['text'])
 
-        # Output to byte stream
-        output_buffer = io.BytesIO()
-        cropped_img.save(output_buffer, format='JPEG', quality=95)
-        output_buffer.seek(0)
+        return jsonify({
+            'success': True,
+            'coords': coords
+        })
 
-        # Step 3: Upload to S3 Bucket
+    except Exception as e:
+        print("Error during processing:", str(e))
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/upload-s3', methods=['POST'])
+def upload_s3():
+    try:
+        if 'image' not in request.files:
+            return jsonify({'error': 'No cropped image received'}), 400
+
+        cropped_file = request.files['image']
         file_name = f"cropped_{os.urandom(8).hex()}.jpg"
+
+        # Direct Stream Upload to S3
         s3_client.upload_fileobj(
-            output_buffer,
+            cropped_file,
             AWS_BUCKET_NAME,
             file_name,
             ExtraArgs={'ContentType': 'image/jpeg'}
         )
 
         s3_url = f"https://{AWS_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{file_name}"
-
-        return jsonify({
-            'success': True,
-            'url': s3_url
-        })
+        return jsonify({'success': True, 'url': s3_url})
 
     except Exception as e:
-        print("Error during processing:", str(e))
+        print("S3 Upload Error:", str(e))
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
