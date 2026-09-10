@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart AI Photo Extractor</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', Roboto, sans-serif;
+      background-color: #0f172a;
+      color: #f8fafc;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    h1 { color: #38bdf8; margin-top: 10px; font-size: 1.8rem; }
+    p.subtitle { color: #94a3b8; margin-bottom: 20px; text-align: center; }
+
+    .upload-btn {
+      background: linear-gradient(135deg, #0284c7, #2563eb);
+      color: white; padding: 12px 24px; font-size: 16px; font-weight: 600;
+      border: none; border-radius: 8px; cursor: pointer; box-shadow: 0 4px 14px rgba(2, 132, 199, 0.4);
+      margin-top: 10px;
+    }
+    .upload-btn:hover { opacity: 0.95; }
+
+    #status { margin: 20px 0 10px 0; font-size: 14px; color: #38bdf8; font-weight: 600; text-align: center; }
+
+    /* Copy All URLs Panel */
+    .global-actions {
+      width: 100%; max-width: 1200px; margin-bottom: 20px; display: none; flex-direction: column; gap: 10px;
+    }
+    .copy-all-btn {
+      background: #10b981; color: white; border: none; padding: 10px 18px; border-radius: 6px;
+      font-size: 14px; font-weight: 600; cursor: pointer; align-self: flex-start;
+    }
+    .copy-all-btn:hover { background: #059669; }
+
+    .grid-container {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 20px; width: 100%; max-width: 1200px; margin-top: 10px;
+    }
+    .card {
+      background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 12px;
+      display: flex; flex-direction: column; align-items: center; gap: 10px;
+    }
+    .img-wrapper { 
+      width: 100%; 
+      background: transparent; 
+      border-radius: 8px; 
+      overflow: hidden; 
+    }
+    .card img { 
+      width: 100%; 
+      height: auto; 
+      display: block; 
+      border-radius: 8px; 
+    }
+    .url-container {
+      width: 100%; display: flex; gap: 6px; align-items: center; margin-top: 4px;
+    }
+    .url-input {
+      flex: 1; padding: 6px 8px; background: #0f172a; border: 1px solid #334155;
+      color: #38bdf8; font-size: 11px; border-radius: 4px; outline: none; text-overflow: ellipsis;
+    }
+    .action-btn {
+      color: #ffffff; background: #0284c7; border: none; padding: 6px 12px;
+      border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: none;
+      white-space: nowrap;
+    }
+    .action-btn:hover { background: #0369a1; }
+    .card-footer { width: 100%; display: flex; justify-content: space-between; align-items: center; }
+  </style>
+</head>
+<body>
+
+  <h1>Smart AI Photo Extractor</h1>
+  <p class="subtitle">Extracts main property photo & uploads directly to AWS S3</p>
+
+  <input type="file" id="upload" accept="image/*" multiple style="display: none;">
+  <button class="upload-btn" onclick="checkAndUpload()">Select Screenshots</button>
+
+  <p id="status">Images select karein.</p>
+
+  <div class="global-actions" id="globalActions">
+    <button class="copy-all-btn" onclick="copyAllUrls()">📋 Copy All S3 URLs</button>
+  </div>
+
+  <div class="grid-container" id="resultsGrid"></div>
+
+  <script>
+    let uploadedUrls = [];
+
+    async function checkAndUpload() {
+      document.getElementById('upload').click();
+    }
+
+    document.getElementById('upload').addEventListener('change', async (e) => {
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
+
+      // Render Environment Variable se Key Fetch Karein
+      document.getElementById('status').innerText = 'Initializing API Keys...';
+      let apiKey = '';
+      try {
+        const keyRes = await fetch('/api/get-gemini-key');
+        const keyData = await keyRes.json();
+        apiKey = keyData.apiKey;
+      } catch (err) {
+        alert("Server Error: Gemini Key fetch nahi ho saki!");
+        return;
+      }
+
+      const grid = document.getElementById('resultsGrid');
+      grid.innerHTML = ""; 
+      uploadedUrls = [];
+      document.getElementById('globalActions').style.display = 'none';
+
+      for (let i = 0; i < files.length; i++) {
+        document.getElementById('status').innerText = `AI Cropping & Uploading image ${i + 1} of ${files.length}...`;
+        await processWithGemini(files[i], apiKey, i + 1);
+      }
+
+      document.getElementById('status').innerText = `Saari ${files.length} images process ho kar S3 par upload ho chuki hain!`;
+      if(uploadedUrls.length > 0) {
+        document.getElementById('globalActions').style.display = 'flex';
+      }
+    });
+
+    async function processWithGemini(file, apiKey, index) {
+      const base64Data = await fileToBase64(file);
+      
+      const promptText = "Detect the main inner interior or property room photograph inside this screenshot. STRICT REQUIREMENT: Crop strictly INSIDE the photo boundary to ensure NO surrounding white borders, white spaces, header bars, or status bars are included. Return strictly 4 integer coordinates [ymin, xmin, ymax, xmax] normalized on a scale from 0 to 1000.";
+
+      const payload = {
+        contents: [{
+          parts: [
+            { text: promptText },
+            { inline_data: { mime_type: file.type || 'image/jpeg', data: base64Data.split(',')[1] } }
+          ]
+        }],
+        generationConfig: {
+          response_mime_type: "application/json",
+          response_schema: {
+            type: "ARRAY",
+            items: { type: "INTEGER" },
+            description: "Bounding box coordinates [ymin, xmin, ymax, xmax] from 0 to 1000"
+          }
+        }
+      };
+
+      const models = ['gemini-3.6-flash', 'gemini-2.5-flash'];
+      let coords = null;
+      let lastError = null;
+
+      for (const modelName of models) {
+        try {
+          const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          const data = await response.json();
+
+          if (!response.ok) {
+            throw new Error(data.error?.message || `HTTP ${response.status}`);
+          }
+
+          let rawJsonText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          
+          if (!rawJsonText) {
+            throw new Error("API se koi valid response nahi mila.");
+          }
+
+          rawJsonText = rawJsonText.replace(/```json/g, '').replace(/```/g, '').trim();
+          coords = JSON.parse(rawJsonText);
+
+          if (Array.isArray(coords) && coords.length === 4) break; 
+        } catch (err) {
+          lastError = err;
+          console.warn(`Model ${modelName} failed:`, err);
+        }
+      }
+
+      if (coords) {
+        await cropAndUploadToS3(file, coords, index);
+      } else {
+        alert(`Error image ${index}: ` + (lastError ? lastError.message : 'Processing failed'));
+      }
+    }
+
+    // ORIGINAL EXACT CROP LOGIC (0% CHANGE)
+    function cropAndUploadToS3(file, coords, index) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.src = URL.createObjectURL(file);
+        img.onload = async () => {
+          const w = img.width;
+          const h = img.height;
+
+          // Auto inset by ~1% (10 units out of 1000) to trim any sub-pixel white edges
+          const safeInset = 10;
+
+          const ymin = Math.max(0, Math.floor(((coords[0] + safeInset) / 1000) * h));
+          const xmin = Math.max(0, Math.floor(((coords[1] + safeInset) / 1000) * w));
+          const ymax = Math.min(h, Math.ceil(((coords[2] - safeInset) / 1000) * h));
+          const xmax = Math.min(w, Math.ceil(((coords[3] - safeInset) / 1000) * w));
+
+          const cropW = xmax - xmin;
+          const cropH = ymax - ymin;
+
+          if (cropW <= 0 || cropH <= 0) {
+            resolve();
+            return;
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = cropW;
+          canvas.height = cropH;
+          const ctx = canvas.getContext('2d');
+
+          ctx.drawImage(img, xmin, ymin, cropW, cropH, 0, 0, cropW, cropH);
+          const croppedUrl = canvas.toDataURL('image/jpeg', 0.95);
+
+          let s3Url = "Uploading to S3...";
+
+          try {
+            // Render Backend Server ko S3 Upload ke liye call karein
+            const res = await fetch('/api/upload-s3', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                imageBase64: croppedUrl,
+                filename: `cropped_property_${Date.now()}_${index}.jpg`
+              })
+            });
+
+            const resData = await res.json();
+            if (res.ok && resData.url) {
+              s3Url = resData.url;
+              uploadedUrls.push(s3Url);
+            } else {
+              throw new Error(resData.error || 'Upload failed');
+            }
+          } catch (err) {
+            console.error("S3 Upload Failed:", err);
+            s3Url = "S3 Upload Failed: " + err.message;
+          }
+
+          renderCard(croppedUrl, s3Url, index);
+          resolve();
+        };
+      });
+    }
+
+    function renderCard(croppedUrl, s3Url, index) {
+      const card = document.createElement('div');
+      card.className = 'card';
+
+      const isSuccess = s3Url.startsWith('http');
+
+      card.innerHTML = `
+        <div class="img-wrapper"><img src="${croppedUrl}"></div>
+        <div class="url-container">
+          <input type="text" readonly class="url-input" id="urlInput_${index}" value="${s3Url}">
+          ${isSuccess ? `<button class="action-btn" onclick="copySingleUrl('urlInput_${index}', this)">Copy</button>` : ''}
+        </div>
+        <div class="card-footer">
+          <a href="${croppedUrl}" download="cropped_${index}.jpg" class="action-btn" style="background:#334155;">Local Download</a>
+        </div>
+      `;
+      document.getElementById('resultsGrid').appendChild(card);
+    }
+
+    function copySingleUrl(inputId, btnElement) {
+      const input = document.getElementById(inputId);
+      input.select();
+      navigator.clipboard.writeText(input.value);
+      const originalText = btnElement.innerText;
+      btnElement.innerText = "Copied!";
+      setTimeout(() => { btnElement.innerText = originalText; }, 1500);
+    }
+
+    function copyAllUrls() {
+      if (uploadedUrls.length === 0) return;
+      const allText = uploadedUrls.join('\n');
+      navigator.clipboard.writeText(allText);
+      alert(`${uploadedUrls.length} S3 URLs clipboard par copy ho chuke hain!`);
+    }
+
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = error => reject(error);
+      });
+    }
+  </script>
+</body>
+</html>
+
