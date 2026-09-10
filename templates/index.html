@@ -172,8 +172,8 @@
           const cropData = await cropRes.json();
 
           if (cropData.success && cropData.coords) {
-            // 2. Exact Gemini Bounding Box Crop
-            const croppedBlob = await cropImageWithGeminiCoords(files[i], cropData.coords);
+            // 2. Precision Crop + White Border Stripping
+            const croppedBlob = await cropAndTrimWhiteLines(files[i], cropData.coords);
 
             // 3. Upload to S3
             const s3FormData = new FormData();
@@ -267,8 +267,8 @@
       }
     }
 
-    // Exact Crop using Gemini Coordinates [ymin, xmin, ymax, xmax]
-    function cropImageWithGeminiCoords(file, coords) {
+    // Exact Crop using Gemini Coordinates + White Border Trimmer
+    function cropAndTrimWhiteLines(file, coords) {
       return new Promise((resolve) => {
         const img = new Image();
         img.src = URL.createObjectURL(file);
@@ -283,13 +283,57 @@
           const cropW = xmax - xmin;
           const cropH = ymax - ymin;
 
-          const canvas = document.createElement('canvas');
-          canvas.width = cropW;
-          canvas.height = cropH;
-          const ctx = canvas.getContext('2d');
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = cropW;
+          tempCanvas.height = cropH;
+          const tempCtx = tempCanvas.getContext('2d');
+          tempCtx.drawImage(img, xmin, ymin, cropW, cropH, 0, 0, cropW, cropH);
 
-          ctx.drawImage(img, xmin, ymin, cropW, cropH, 0, 0, cropW, cropH);
-          canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.95);
+          // Strip white margins
+          const imgData = tempCtx.getImageData(0, 0, cropW, cropH);
+          const pixels = imgData.data;
+
+          let trimTop = 0;
+          let trimBottom = cropH;
+
+          for (let y = 0; y < Math.floor(cropH * 0.15); y++) {
+            let isWhite = true;
+            for (let x = 0; x < cropW; x += 5) {
+              const idx = (y * cropW + x) * 4;
+              if (pixels[idx] < 235 || pixels[idx+1] < 235 || pixels[idx+2] < 235) {
+                isWhite = false; break;
+              }
+            }
+            if (isWhite) trimTop = y + 1;
+            else break;
+          }
+
+          for (let y = cropH - 1; y > Math.floor(cropH * 0.85); y--) {
+            let isWhite = true;
+            for (let x = 0; x < cropW; x += 5) {
+              const idx = (y * cropW + x) * 4;
+              if (pixels[idx] < 235 || pixels[idx+1] < 235 || pixels[idx+2] < 235) {
+                isWhite = false; break;
+              }
+            }
+            if (isWhite) trimBottom = y;
+            else break;
+          }
+
+          const finalH = Math.max(10, trimBottom - trimTop);
+
+          const finalCanvas = document.createElement('canvas');
+          finalCanvas.width = cropW;
+          finalCanvas.height = finalH;
+          const finalCtx = finalCanvas.getContext('2d');
+
+          finalCtx.drawImage(
+            tempCanvas,
+            0, trimTop, cropW, finalH,
+            0, 0, cropW, finalH
+          );
+
+          finalCanvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.95);
         };
       });
     }
@@ -334,3 +378,4 @@
   </script>
 </body>
 </html>
+
