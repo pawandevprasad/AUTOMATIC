@@ -1,14 +1,10 @@
 import os
 import io
 import json
-import time
 import base64
 import boto3
 import requests
 from flask import Flask, request, jsonify, render_template
-from pymongo import MongoClient
-from google import genai
-from google.genai import types
 from PIL import Image
 
 app = Flask(__name__, template_folder='.')
@@ -18,9 +14,15 @@ MONGO_URI = os.environ.get("MONGO_URI", "")
 DB_NAME = "property_database"
 COLLECTION_NAME = "properties"
 
-client_db = MongoClient(MONGO_URI) if MONGO_URI else None
-db = client_db[DB_NAME] if client_db else None
-collection = db[COLLECTION_NAME] if db is not None else None
+collection = None
+if MONGO_URI:
+    try:
+        from pymongo import MongoClient
+        client_db = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
+        db = client_db[DB_NAME]
+        collection = db[COLLECTION_NAME]
+    except Exception as mongo_err:
+        print(f"MongoDB Warning: {mongo_err}")
 
 # AWS S3 Configuration
 S3_BUCKET = (
@@ -42,16 +44,19 @@ AWS_SECRET_KEY = (
 
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=AWS_ACCESS_KEY,
-    aws_secret_access_key=AWS_SECRET_KEY,
-    region_name=AWS_REGION
-)
+s3_client = None
+if AWS_ACCESS_KEY and AWS_SECRET_KEY:
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=AWS_ACCESS_KEY,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            region_name=AWS_REGION
+        )
+    except Exception as s3_err:
+        print(f"S3 Warning: {s3_err}")
 
-# Gemini API Client
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 
 # --- HELPER FUNCTION: Enforce Rules & Logic ---
@@ -76,7 +81,6 @@ def process_and_enforce_rules(data, s3_urls):
     spec = safe_get_dict(data, "specifications")
     med = safe_get_dict(data, "media")
 
-    # RULE 1: Bathrooms & Balconies Logic
     raw_bathrooms = spec.get("bathrooms", "1")
     try:
         bath_num = int(''.join(filter(str.isdigit, str(raw_bathrooms))))
@@ -85,7 +89,6 @@ def process_and_enforce_rules(data, s3_urls):
 
     balconies_val = "2" if bath_num >= 4 else "1"
 
-    # RULE 2: Area Math Calculation
     builtup = str(spec.get("builtup_sqft", "na")).strip()
     carpet = str(spec.get("carpet_sqft", "na")).strip()
     super_built = str(spec.get("super_builtup_sqft", "na")).strip()
@@ -115,7 +118,6 @@ def process_and_enforce_rules(data, s3_urls):
     final_carpet = str(int(c_num)) if c_num else "na"
     final_super = str(int(s_num)) if s_num else "na"
 
-    # RULE 3: Construction Status & Property Age
     raw_status = str(spec.get("construction_status", "")).upper()
     if "UNDER" in raw_status or "CONSTRUCTION" in raw_status:
         construction_status = "UNDER_CONSTRUCTION"
@@ -127,7 +129,6 @@ def process_and_enforce_rules(data, s3_urls):
         construction_status = spec.get("construction_status", "READY_TO_MOVE")
         property_age = spec.get("property_age", "na")
 
-    # RULE 4: Location, Sub-locality & Full Address
     locality_val = loc.get("locality", "na")
     city_val = loc.get("city", "Kolkata")
     state_val = loc.get("state", "West Bengal")
@@ -147,7 +148,6 @@ def process_and_enforce_rules(data, s3_urls):
     else:
         full_addr = base_addr
 
-    # RULE 5: BHK Numeric Calculation
     raw_bhk = spec.get("bhk_type", "na")
     bhk_num_val = spec.get("bhk_numeric", "na")
     if (bhk_num_val == "na" or not bhk_num_val) and raw_bhk != "na":
@@ -155,12 +155,10 @@ def process_and_enforce_rules(data, s3_urls):
         if extracted_digits:
             bhk_num_val = extracted_digits
 
-    # RULE 6: Phone Number Fallback
     raw_phone = str(cnt.get("phone", "na")).strip()
     if not raw_phone or raw_phone.lower() in ["na", "none", "null"]:
         raw_phone = "9073662554"
 
-    # RULE 7: Title & Description Anti-NA Fallbacks
     raw_title = str(td.get("title", "na")).strip()
     raw_desc = str(td.get("description", "na")).strip()
 
@@ -173,7 +171,6 @@ def process_and_enforce_rules(data, s3_urls):
     if not raw_desc or raw_desc.lower() in ["na", "none", "null"]:
         raw_desc = f"Flat for Resale in Upohar The Condoville {loc_clean}, {city_clean}"
 
-    # RULE 8: Smart Defaults
     parking_val = spec.get("parking", "YES")
     if not parking_val or str(parking_val).lower() in ["na", "none", "null"]:
         parking_val = "YES"
@@ -186,7 +183,6 @@ def process_and_enforce_rules(data, s3_urls):
     if not created_at_val or str(created_at_val).lower() in ["na", "none", "null"]:
         created_at_val = "few years"
 
-    # STRICT SERIAL ORDERED OUTPUT
     return {
         "user_id": data.get("user_id", "ADMIN"),
         "posted_by_type": data.get("posted_by_type", "ADMIN"),
@@ -286,8 +282,8 @@ def extract_json():
         except Exception:
             s3_urls = []
 
-        if not ai_client:
-            return jsonify({"success": False, "error": "GEMINI_API_KEY is not configured on server"}), 500
+        if not GEMINI_API_KEY:
+            return jsonify({"success": False, "error": "GEMINI_API_KEY is not configured"}), 500
 
         prompt_text = """
 Read all uploaded property screenshots with extreme OCR attention and extract details strictly into JSON:
@@ -308,50 +304,46 @@ CRITICAL EXTRACTION RULES:
 8. Return strictly raw JSON without markdown code fences (no ```json).
 """
 
-        contents = [prompt_text]
+        parts = [{"text": prompt_text}]
 
         for file in data_files:
             try:
-                img = Image.open(file.stream)
-                img = img.convert("RGB")
+                img = Image.open(file.stream).convert("RGB")
                 img.thumbnail((1000, 1000))
                 
                 byte_arr = io.BytesIO()
                 img.save(byte_arr, format='JPEG', quality=85)
-                image_bytes = byte_arr.getvalue()
+                base64_str = base64.b64encode(byte_arr.getvalue()).decode('utf-8')
 
-                contents.append(
-                    types.Part.from_bytes(
-                        data=image_bytes,
-                        mime_type='image/jpeg'
-                    )
-                )
+                parts.append({
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": base64_str
+                    }
+                })
             except Exception as img_err:
                 print(f"Image load error: {img_err}")
-                continue
 
-        response = ai_client.models.generate_content(
-            model='gemini-3.6-flash',
-            contents=contents
-        )
+        gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=){GEMINI_API_KEY}"
+        res = requests.post(gemini_url, json={"contents": [{"parts": parts}]}, timeout=45)
 
-        if not response or not response.text:
-            return jsonify({"success": False, "error": "Empty response from Gemini API"}), 500
+        if not res.ok:
+            return jsonify({"success": False, "error": f"Gemini API Error: {res.text}"}), 500
 
-        cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
-        
+        res_data = res.json()
+        raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
+        cleaned_text = raw_text.replace("```json", "").replace("```", "").strip()
+
         try:
             parsed_json = json.loads(cleaned_text)
         except Exception:
             parsed_json = {}
 
         final_ordered_json = process_and_enforce_rules(parsed_json, s3_urls)
-
         return jsonify({"success": True, "data": final_ordered_json}), 200
 
     except Exception as e:
-        print(f"Server Exception in extract_json: {str(e)}")
-        return jsonify({"success": False, "error": f"Server Error: {str(e)}"}), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/submit-to-db', methods=['POST'])
 def submit_to_db():
@@ -373,5 +365,6 @@ def submit_to_db():
         return jsonify({"success": False, "error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
-        
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
+                                        
