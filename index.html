@@ -41,7 +41,7 @@
     }
     .card img { max-width: 100%; max-height: 100%; object-fit: contain; }
     
-    .loading-spinner { color: #94a3b8; font-size: 13px; font-style: italic; }
+    .loading-spinner { color: #94a3b8; font-size: 13px; font-style: italic; text-align: center; padding: 10px; }
 
     .url-box { width: 100%; display: flex; gap: 5px; align-items: center; }
     .url-input {
@@ -121,7 +121,6 @@
 
       const uploadedUrls = [];
 
-      // Process strictly in Serial Order
       for (let i = 0; i < files.length; i++) {
         document.getElementById('status').innerText = `Processing image ${i + 1} of ${files.length}...`;
         
@@ -129,15 +128,12 @@
           const formData = new FormData();
           formData.append('image', files[i]);
 
-          // Step 1: Crop coordinates from Flask Backend
           const response = await fetch('/process-image', { method: 'POST', body: formData });
           const data = await response.json();
 
           if (data.success && data.coords) {
-            // Step 2: Canvas Crop
             const croppedBlob = await cropImageCanvas(files[i], data.coords);
 
-            // Step 3: Upload Cropped Blob to S3
             const s3FormData = new FormData();
             s3FormData.append('image', croppedBlob);
 
@@ -198,14 +194,13 @@
       });
     }
 
-    // Silent Copy Helper (Works across all browsers without alert popups)
-    function silentCopyText(textToCopy) {
+    // Direct Silent Copy Function
+    function copyTextToClipboard(text) {
       if (navigator.clipboard && window.isSecureContext) {
-        return navigator.clipboard.writeText(textToCopy);
+        return navigator.clipboard.writeText(text);
       } else {
-        // Fallback for older browsers
         const textArea = document.createElement("textarea");
-        textArea.value = textToCopy;
+        textArea.value = text;
         textArea.style.position = "fixed";
         textArea.style.left = "-999999px";
         document.body.appendChild(textArea);
@@ -218,10 +213,9 @@
       }
     }
 
-    // 1-Click Copy Single URL
     function copySingleURL(inputId, btnElement) {
       const input = document.getElementById(inputId);
-      silentCopyText(input.value).then(() => {
+      copyTextToClipboard(input.value).then(() => {
         btnElement.innerText = "Copied!";
         btnElement.classList.add("copied");
         setTimeout(() => {
@@ -231,21 +225,21 @@
       });
     }
 
-    // 1-Click Copy All URLs
     function copyAllURLs() {
       const allUrlsText = document.getElementById('allUrlsBox');
       const btn = document.getElementById('selectAllBtn');
 
       allUrlsText.select();
-      silentCopyText(allUrlsText.value).then(() => {
-        btn.innerText = "✓ All URLs Copied to Clipboard!";
+      copyTextToClipboard(allUrlsText.value).then(() => {
+        btn.innerText = "✓ All URLs Copied!";
         btn.classList.add("copied");
         setTimeout(() => {
           btn.innerText = "Select & Copy All URLs";
           btn.classList.remove("copied");
-        }, 3000);
+        }, 2500);
       });
     }
   </script>
 </body>
 </html>
+
