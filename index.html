@@ -86,7 +86,7 @@
         await processWithGemini(files[i], apiKey, i + 1);
       }
 
-      document.getElementById('status').innerText = `Saari ${files.length} images perfectly crop ho chuki hain!`;
+      document.getElementById('status').innerText = `Saari ${files.length} images process ho chuki hain!`;
     });
 
     async function processWithGemini(file, apiKey, index) {
@@ -111,7 +111,6 @@
         }
       };
 
-      // Primary Model: gemini-3.6-flash, Fallback: gemini-2.5-flash
       const models = ['gemini-3.6-flash', 'gemini-2.5-flash'];
       let coords = null;
       let lastError = null;
@@ -124,18 +123,26 @@
             body: JSON.stringify(payload)
           });
 
+          const data = await response.json();
+
           if (!response.ok) {
-            const errData = await response.json();
-            throw new Error(errData.error?.message || `HTTP ${response.status}`);
+            throw new Error(data.error?.message || `HTTP ${response.status}`);
           }
 
-          const data = await response.json();
-          const rawJsonText = data.candidates[0].content.parts[0].text;
+          let rawJsonText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          
+          if (!rawJsonText) {
+            throw new Error("API se koi valid response nahi mila.");
+          }
+
+          // Markdown clear karke safe JSON parse
+          rawJsonText = rawJsonText.replace(/```json/g, '').replace(/```/g, '').trim();
           coords = JSON.parse(rawJsonText);
-          if (coords && coords.length === 4) break; // Successfully obtained coordinates
+
+          if (Array.isArray(coords) && coords.length === 4) break; 
         } catch (err) {
           lastError = err;
-          console.warn(`Model ${modelName} failed, trying next...`, err);
+          console.warn(`Model ${modelName} failed:`, err);
         }
       }
 
@@ -153,7 +160,6 @@
         const w = img.width;
         const h = img.height;
 
-        // Scale normalized 0-1000 coordinates back to actual pixel dimensions
         const ymin = Math.max(0, Math.floor((coords[0] / 1000) * h));
         const xmin = Math.max(0, Math.floor((coords[1] / 1000) * w));
         const ymax = Math.min(h, Math.ceil((coords[2] / 1000) * h));
