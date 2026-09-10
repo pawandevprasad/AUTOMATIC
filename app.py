@@ -1,13 +1,13 @@
 import os
 import io
 import json
+import re
 import base64
 import boto3
 import requests
 from flask import Flask, request, jsonify, render_template
 from PIL import Image
 
-# Template folder explicitly set to 'templates' to fix TemplateNotFound
 app = Flask(__name__, template_folder='templates')
 
 # --- CONFIGURATIONS & ENV VARIABLES ---
@@ -51,7 +51,7 @@ if AWS_ACCESS_KEY and AWS_SECRET_KEY:
         s3_client = boto3.client(
             's3',
             aws_access_key_id=AWS_ACCESS_KEY,
-            aws_secret_access_key=AWS_SECRET_KEY,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
             region_name=AWS_REGION
         )
     except Exception as s3_err:
@@ -250,29 +250,102 @@ def index():
     except Exception as e:
         return f"Template Render Error: {str(e)}", 500
 
+# 🌟 Gemini AI Bounding Box Endpoint (Smarter Dynamic Endpoint Fallback)
+@app.route('/api/detect-crop-box', methods=['POST'])
+def detect_crop_box():
+    try:
+        if 'image' not in request.files:
+            return jsonify({'success': False, 'error': 'No image provided'}), 400
+
+        if not GEMINI_API_KEY:
+            return jsonify({'success': False, 'error': 'GEMINI_API_KEY missing'}), 500
+
+        file = request.files['image']
+        img = Image.open(file.stream).convert("RGB")
+        img.thumbnail((800, 800))
+        
+        byte_arr = io.BytesIO()
+        img.save(byte_arr, format='JPEG', quality=85)
+        base64_str = base64.b64encode(byte_arr.getvalue()).decode('utf-8')
+
+        prompt_text = (
+            "Detect the bounding box of ONLY the main interior room or property photograph in this screenshot. "
+            "Ignore top status bar, header bar, floating video overlays, WhatsApp/call buttons, and large white spaces. "
+            "Return EXACTLY four normalized integer coordinates in square brackets like [ymin, xmin, ymax, xmax] from 0 to 1000. "
+            "Example: [320, 0, 780, 1000]"
+        )
+
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt_text},
+                    {"inline_data": {"mime_type": "image/jpeg", "data": base64_str}}
+                ]
+            }]
+        }
+
+        # Auto-try valid Developer API Endpoints (Avoids 404/500 errors)
+        api_endpoints = [
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}",
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        ]
+
+        res = None
+        for gemini_url in api_endpoints:
+            try:
+                res = requests.post(gemini_url, json=payload, timeout=20)
+                if res.ok:
+                    break
+            except Exception:
+                pass
+
+        if not res or not res.ok:
+            err_details = res.text if res else "No response"
+            return jsonify({'success': False, 'error': f"Gemini API Error: {err_details}"}), 500
+
+        res_data = res.json()
+        raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
+        
+        # Regex parsing to safely catch [ymin, xmin, ymax, xmax]
+        match = re.search(r'\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]', raw_text)
+        if match:
+            coords = [int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4))]
+        else:
+            nums = [int(n) for n in re.findall(r'\d+', raw_text)]
+            if len(nums) >= 4:
+                coords = nums[:4]
+            else:
+                coords = [300, 0, 800, 1000]
+
+        return jsonify({'success': True, 'coords': coords})
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/upload-s3-single', methods=['POST'])
 def upload_s3_single():
     try:
         if 'image' not in request.files:
             return jsonify({"success": False, "error": "No image provided"}), 400
         
+        if not s3_client:
+            return jsonify({"success": False, "error": "S3 Credentials missing"}), 500
+
         file = request.files['image']
         filename = f"cropped_{os.urandom(8).hex()}.jpg"
 
-        if s3_client:
-            s3_client.upload_fileobj(
-                file,
-                S3_BUCKET,
-                filename,
-                ExtraArgs={'ContentType': 'image/jpeg'}
-            )
-            file_url = f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{filename}"
-            return jsonify({"success": True, "url": file_url}), 200
-        else:
-            return jsonify({"success": False, "error": "S3 Client not initialized. Check AWS credentials."}), 500
+        s3_client.upload_fileobj(
+            file,
+            S3_BUCKET,
+            filename,
+            ExtraArgs={'ContentType': 'image/jpeg'}
+        )
+
+        file_url = f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{filename}"
+        return jsonify({"success": True, "url": file_url}), 200
 
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": f"S3 Upload Error: {str(e)}"}), 500
 
 @app.route('/api/extract-json', methods=['POST'])
 def extract_json():
@@ -289,7 +362,7 @@ def extract_json():
             s3_urls = []
 
         if not GEMINI_API_KEY:
-            return jsonify({"success": False, "error": "GEMINI_API_KEY is not configured"}), 500
+            return jsonify({"success": False, "error": "GEMINI_API_KEY missing"}), 500
 
         prompt_text = """
 Read all uploaded property screenshots with extreme OCR attention and extract details strictly into JSON:
@@ -328,14 +401,15 @@ CRITICAL EXTRACTION RULES:
                     }
                 })
             except Exception as img_err:
-                print(f"Image load error: {img_err}")
+                print(f"Image warning: {img_err}")
 
-        # Multiple Model Failover Strategy
-        models = ["gemini-2.5-flash", "gemini-1.5-flash"]
+        api_endpoints = [
+            f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=){GEMINI_API_KEY}",
+            f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=){GEMINI_API_KEY}"
+        ]
+
         res = None
-
-        for m in models:
-            gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){m}:generateContent?key={GEMINI_API_KEY}"
+        for gemini_url in api_endpoints:
             try:
                 res = requests.post(gemini_url, json={"contents": [{"parts": parts}]}, timeout=45)
                 if res.ok:
@@ -344,8 +418,7 @@ CRITICAL EXTRACTION RULES:
                 pass
 
         if not res or not res.ok:
-            err_msg = res.text if res else "Failed to contact Gemini API"
-            return jsonify({"success": False, "error": f"Gemini API Error: {err_msg}"}), 500
+            return jsonify({"success": False, "error": f"Gemini API Error: {res.text if res else 'No response'}"}), 500
 
         res_data = res.json()
         raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
@@ -376,7 +449,7 @@ def submit_to_db():
                 "message": f"Data successfully submitted to Database! ID: {str(result.inserted_id)}"
             }), 200
         else:
-            return jsonify({"success": True, "message": "Database not configured, but JSON parsed successfully."}), 200
+            return jsonify({"success": True, "message": "Database not configured, but JSON is valid."}), 200
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
