@@ -38,8 +38,18 @@
       background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 12px;
       display: flex; flex-direction: column; align-items: center;
     }
-    .img-wrapper { width: 100%; background: #0f172a; border-radius: 8px; overflow: hidden; }
-    .card img { width: 100%; height: auto; display: block; }
+    .img-wrapper { 
+      width: 100%; 
+      background: transparent; 
+      border-radius: 8px; 
+      overflow: hidden; 
+    }
+    .card img { 
+      width: 100%; 
+      height: auto; 
+      display: block; 
+      border-radius: 8px; 
+    }
     .download-btn {
       margin-top: 10px; color: #ffffff; background: #0284c7; text-decoration: none;
       padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; align-self: flex-end;
@@ -92,7 +102,7 @@
     async function processWithGemini(file, apiKey, index) {
       const base64Data = await fileToBase64(file);
       
-      const promptText = "Detect the main interior or property room photograph inside this screenshot. Completely ignore top status bar, top header/X buttons, floating video windows, bottom WhatsApp/contact buttons, text, and all surrounding white spaces. Return strictly 4 integer coordinates [ymin, xmin, ymax, xmax] normalized on a scale from 0 to 1000.";
+      const promptText = "Detect the main inner interior or property room photograph inside this screenshot. STRICT REQUIREMENT: Crop strictly INSIDE the photo boundary to ensure NO surrounding white borders, white spaces, header bars, or status bars are included. Return strictly 4 integer coordinates [ymin, xmin, ymax, xmax] normalized on a scale from 0 to 1000.";
 
       const payload = {
         contents: [{
@@ -135,7 +145,6 @@
             throw new Error("API se koi valid response nahi mila.");
           }
 
-          // Markdown clear karke safe JSON parse
           rawJsonText = rawJsonText.replace(/```json/g, '').replace(/```/g, '').trim();
           coords = JSON.parse(rawJsonText);
 
@@ -160,23 +169,18 @@
         const w = img.width;
         const h = img.height;
 
-        // White border ko cut karne ke liye crop area tight karne ke points
-        const tightenPoints = 15;
+        // Auto inset by ~1% (10 units out of 1000) to trim any sub-pixel white edges
+        const safeInset = 10;
 
-        // Tighten coordinate limits (0 to 1000 scale)
-        const tightenedYmin = coords[0] + tightenPoints;
-        const tightenedXmin = coords[1] + tightenPoints;
-        const tightenedYmax = coords[2] - tightenPoints;
-        const tightenedXmax = coords[3] - tightenPoints;
-
-        // Coordinates scale to pixels
-        const ymin = Math.max(0, Math.floor((tightenedYmin / 1000) * h));
-        const xmin = Math.max(0, Math.floor((tightenedXmin / 1000) * w));
-        const ymax = Math.min(h, Math.ceil((tightenedYmax / 1000) * h));
-        const xmax = Math.min(w, Math.ceil((tightenedXmax / 1000) * w));
+        const ymin = Math.max(0, Math.floor(((coords[0] + safeInset) / 1000) * h));
+        const xmin = Math.max(0, Math.floor(((coords[1] + safeInset) / 1000) * w));
+        const ymax = Math.min(h, Math.ceil(((coords[2] - safeInset) / 1000) * h));
+        const xmax = Math.min(w, Math.ceil(((coords[3] - safeInset) / 1000) * w));
 
         const cropW = xmax - xmin;
         const cropH = ymax - ymin;
+
+        if (cropW <= 0 || cropH <= 0) return;
 
         const canvas = document.createElement('canvas');
         canvas.width = cropW;
