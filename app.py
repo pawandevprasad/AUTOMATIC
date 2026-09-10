@@ -51,7 +51,7 @@ if AWS_ACCESS_KEY and AWS_SECRET_KEY:
         s3_client = boto3.client(
             's3',
             aws_access_key_id=AWS_ACCESS_KEY,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            aws_secret_access_key=AWS_SECRET_KEY,
             region_name=AWS_REGION
         )
     except Exception as s3_err:
@@ -250,7 +250,6 @@ def index():
     except Exception as e:
         return f"Template Render Error: {str(e)}", 500
 
-# 🌟 Gemini AI Bounding Box Endpoint (Smarter Dynamic Endpoint Fallback)
 @app.route('/api/detect-crop-box', methods=['POST'])
 def detect_crop_box():
     try:
@@ -269,7 +268,7 @@ def detect_crop_box():
         base64_str = base64.b64encode(byte_arr.getvalue()).decode('utf-8')
 
         prompt_text = (
-            "Detect the bounding box of ONLY the main interior room or property photograph in this screenshot. "
+            "Detect the bounding box of ONLY the main interior room or property photograph inside this screenshot. "
             "Ignore top status bar, header bar, floating video overlays, WhatsApp/call buttons, and large white spaces. "
             "Return EXACTLY four normalized integer coordinates in square brackets like [ymin, xmin, ymax, xmax] from 0 to 1000. "
             "Example: [320, 0, 780, 1000]"
@@ -284,7 +283,7 @@ def detect_crop_box():
             }]
         }
 
-        # Auto-try valid Developer API Endpoints (Avoids 404/500 errors)
+        # Multi-model endpoint fallback array (Prevents 404 & 500 errors)
         api_endpoints = [
             f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}",
             f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -300,13 +299,11 @@ def detect_crop_box():
                 pass
 
         if not res or not res.ok:
-            err_details = res.text if res else "No response"
-            return jsonify({'success': False, 'error': f"Gemini API Error: {err_details}"}), 500
+            return jsonify({'success': False, 'error': f"Gemini API Error: {res.text if res else 'No response'}"}), 500
 
         res_data = res.json()
         raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
         
-        # Regex parsing to safely catch [ymin, xmin, ymax, xmax]
         match = re.search(r'\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]', raw_text)
         if match:
             coords = [int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4))]
