@@ -1,25 +1,29 @@
 import os
 import io
 import json
-import time
 import base64
 import boto3
+import requests
 from flask import Flask, request, jsonify, render_template
-from pymongo import MongoClient
-from google import genai
-from google.genai import types
 from PIL import Image
 
-app = Flask(__name__, template_folder='.')
+app = Flask(__name__, template_folder='templates')
 
 # --- CONFIGURATIONS & ENV VARIABLES ---
 MONGO_URI = os.environ.get("MONGO_URI", "")
 DB_NAME = "property_database"
 COLLECTION_NAME = "properties"
 
-client_db = MongoClient(MONGO_URI) if MONGO_URI else None
-db = client_db[DB_NAME] if client_db else None
-collection = db[COLLECTION_NAME] if db is not None else None
+# Safe MongoDB Connection
+collection = None
+if MONGO_URI:
+    try:
+        from pymongo import MongoClient
+        client_db = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
+        db = client_db[DB_NAME]
+        collection = db[COLLECTION_NAME]
+    except Exception as mongo_err:
+        print(f"MongoDB Warning: {mongo_err}")
 
 # AWS S3 Configuration
 S3_BUCKET = (
@@ -41,16 +45,21 @@ AWS_SECRET_KEY = (
 
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=AWS_ACCESS_KEY,
-    aws_secret_access_key=AWS_SECRET_KEY,
-    region_name=AWS_REGION
-)
+# Safe S3 Client
+s3_client = None
+if AWS_ACCESS_KEY and AWS_SECRET_KEY:
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=AWS_ACCESS_KEY,
+            aws_secret_access_key=AWS_SECRET_KEY,
+            region_name=AWS_REGION
+        )
+    except Exception as s3_err:
+        print(f"S3 Warning: {s3_err}")
 
-# Gemini Official GenAI Client
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+# Gemini API Key
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 
 # --- HELPER FUNCTION: Enforce Rules & Logic ---
@@ -247,55 +256,10 @@ def process_and_enforce_rules(data, s3_urls):
 
 @app.route('/')
 def index():
-    return render_template('index.html', db_name=DB_NAME, collection_name=COLLECTION_NAME)
-
-@app.route('/api/detect-crop-box', methods=['POST'])
-def detect_crop_box():
     try:
-        if 'image' not in request.files:
-            return jsonify({'success': False, 'error': 'No image provided'}), 400
-
-        if not ai_client:
-            return jsonify({'success': False, 'error': 'GEMINI_API_KEY environment variable missing on server'}), 500
-
-        file = request.files['image']
-        
-        # Optimize Image Size to avoid API timeouts
-        img = Image.open(file.stream).convert("RGB")
-        img.thumbnail((800, 800))
-        
-        byte_arr = io.BytesIO()
-        img.save(byte_arr, format='JPEG', quality=85)
-        image_bytes = byte_arr.getvalue()
-
-        prompt_text = (
-            "Detect the main interior or property room photograph inside this screenshot. "
-            "Completely ignore status bar, header, floating videos, bottom contact/WhatsApp buttons, and surrounding white spaces. "
-            "Return ONLY a JSON array with 4 integer coordinates [ymin, xmin, ymax, xmax] normalized from 0 to 1000."
-        )
-
-        response = ai_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg'),
-                prompt_text
-            ],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
-        )
-
-        if not response or not response.text:
-            return jsonify({'success': False, 'error': 'Empty response from Gemini Model'}), 500
-
-        cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
-        coords = json.loads(cleaned_text)
-
-        return jsonify({'success': True, 'coords': coords})
-
+        return render_template('index.html', db_name=DB_NAME, collection_name=COLLECTION_NAME)
     except Exception as e:
-        print("Crop detection error:", str(e))
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return f"Template Render Error: {str(e)}. Make sure 'index.html' is inside 'templates/' folder.", 500
 
 @app.route('/api/upload-s3-single', methods=['POST'])
 def upload_s3_single():
@@ -303,6 +267,9 @@ def upload_s3_single():
         if 'image' not in request.files:
             return jsonify({"success": False, "error": "No image provided"}), 400
         
+        if not s3_client:
+            return jsonify({"success": False, "error": "AWS S3 Credentials missing in environment variables"}), 500
+
         file = request.files['image']
         filename = f"cropped_{os.urandom(8).hex()}.jpg"
 
@@ -317,7 +284,7 @@ def upload_s3_single():
         return jsonify({"success": True, "url": file_url}), 200
 
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": f"S3 Upload Failed: {str(e)}"}), 500
 
 @app.route('/api/extract-json', methods=['POST'])
 def extract_json():
@@ -333,8 +300,8 @@ def extract_json():
         except Exception:
             s3_urls = []
 
-        if not ai_client:
-            return jsonify({"success": False, "error": "GEMINI_API_KEY environment variable missing on server"}), 500
+        if not GEMINI_API_KEY:
+            return jsonify({"success": False, "error": "GEMINI_API_KEY missing in environment variables"}), 500
 
         prompt_text = """
 Read all uploaded property screenshots with extreme OCR attention and extract details strictly into JSON:
@@ -355,50 +322,48 @@ CRITICAL EXTRACTION RULES:
 8. Return strictly raw JSON without markdown code fences (no ```json).
 """
 
-        contents = [prompt_text]
+        parts = [{"text": prompt_text}]
 
         for file in data_files:
             try:
-                img = Image.open(file.stream)
-                img = img.convert("RGB")
+                img = Image.open(file.stream).convert("RGB")
                 img.thumbnail((1000, 1000))
                 
                 byte_arr = io.BytesIO()
                 img.save(byte_arr, format='JPEG', quality=85)
-                image_bytes = byte_arr.getvalue()
+                base64_str = base64.b64encode(byte_arr.getvalue()).decode('utf-8')
 
-                contents.append(
-                    types.Part.from_bytes(
-                        data=image_bytes,
-                        mime_type='image/jpeg'
-                    )
-                )
+                parts.append({
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": base64_str
+                    }
+                })
             except Exception as img_err:
-                print(f"Image load error: {img_err}")
-                continue
+                print(f"Image processing warning: {img_err}")
 
-        response = ai_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=contents
-        )
+        # REST API Call to Gemini 3.6 Flash
+        gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=){GEMINI_API_KEY}"
+        res = requests.post(gemini_url, json={"contents": [{"parts": parts}]}, timeout=45)
 
-        if not response or not response.text:
-            return jsonify({"success": False, "error": "Empty response from Gemini API"}), 500
+        if not res.ok:
+            return jsonify({"success": False, "error": f"Gemini API Error: {res.text}"}), 500
 
-        cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
-        
+        res_data = res.json()
+        raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
+        cleaned_text = raw_text.replace("```json", "").replace("```", "").strip()
+
         try:
             parsed_json = json.loads(cleaned_text)
         except Exception:
             parsed_json = {}
 
         final_ordered_json = process_and_enforce_rules(parsed_json, s3_urls)
-
         return jsonify({"success": True, "data": final_ordered_json}), 200
 
     except Exception as e:
         print(f"Server Exception in extract_json: {str(e)}")
-        return jsonify({"success": False, "error": f"Server Error: {str(e)}"}), 500
+        return jsonify({"success": False, "error": f"Server Exception: {str(e)}"}), 500
 
 @app.route('/api/submit-to-db', methods=['POST'])
 def submit_to_db():
@@ -414,11 +379,11 @@ def submit_to_db():
                 "message": f"Data successfully submitted to Database! ID: {str(result.inserted_id)}"
             }), 200
         else:
-            return jsonify({"success": True, "message": "Database not configured, but JSON parsed successfully."}), 200
+            return jsonify({"success": True, "message": "Database not configured, but JSON is valid."}), 200
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
-    
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+            
