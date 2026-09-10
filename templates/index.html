@@ -131,7 +131,7 @@
   <script>
     let globalS3Urls = [];
 
-    // Step 1: Handling Property Images selection
+    // Step 1: Fast Local Crop & Direct S3 Upload
     document.getElementById('propImages').addEventListener('change', async (e) => {
       const files = Array.from(e.target.files);
       if (!files || files.length === 0) return;
@@ -142,7 +142,7 @@
       document.getElementById('allUrlsBox').value = "";
       document.getElementById('actionBar').style.display = "none";
 
-      document.getElementById('status').innerText = `Processing ${files.length} property images in serial order...`;
+      document.getElementById('status').innerText = `Cropping & Uploading ${files.length} images...`;
 
       files.forEach((file, index) => {
         const card = document.createElement('div');
@@ -150,7 +150,7 @@
         card.id = `card_${index}`;
         card.innerHTML = `
           <div class="img-wrapper">
-            <span class="loading-spinner" id="spinner_${index}">Cropping #${index + 1}...</span>
+            <span class="loading-spinner" id="spinner_${index}">Processing #${index + 1}...</span>
             <img id="img_${index}" style="display:none;">
           </div>
           <div class="url-box" id="urlBox_${index}" style="display:none;">
@@ -162,43 +162,33 @@
       });
 
       for (let i = 0; i < files.length; i++) {
-        document.getElementById('status').innerText = `Cropping & Uploading image ${i + 1} of ${files.length}...`;
+        document.getElementById('status').innerText = `Uploading image ${i + 1} of ${files.length}...`;
         
         try {
-          const formData = new FormData();
-          formData.append('image', files[i]);
+          // Instant Local Canvas Crop (Trims Status bar, Floating Videos & Bottom Ads)
+          const croppedBlob = await fastLocalCrop(files[i]);
 
-          const cropRes = await fetch('/api/detect-crop-box', { method: 'POST', body: formData });
-          const cropData = await cropRes.json();
+          const s3FormData = new FormData();
+          s3FormData.append('image', croppedBlob);
 
-          if (cropData.success && cropData.coords) {
-            // Smart Crop Canvas with White-Border Removal
-            const croppedBlob = await cropImageCanvasNoWhiteLines(files[i], cropData.coords);
+          const uploadRes = await fetch('/api/upload-s3-single', { method: 'POST', body: s3FormData });
+          const uploadData = await uploadRes.json();
 
-            const s3FormData = new FormData();
-            s3FormData.append('image', croppedBlob);
+          if (uploadData.success) {
+            document.getElementById(`spinner_${i}`).style.display = 'none';
+            
+            const imgElem = document.getElementById(`img_${i}`);
+            imgElem.src = uploadData.url;
+            imgElem.style.display = 'block';
 
-            const uploadRes = await fetch('/api/upload-s3-single', { method: 'POST', body: s3FormData });
-            const uploadData = await uploadRes.json();
+            const urlInput = document.getElementById(`urlInput_${i}`);
+            urlInput.value = uploadData.url;
+            document.getElementById(`urlBox_${i}`).style.display = 'flex';
 
-            if (uploadData.success) {
-              document.getElementById(`spinner_${i}`).style.display = 'none';
-              
-              const imgElem = document.getElementById(`img_${i}`);
-              imgElem.src = uploadData.url;
-              imgElem.style.display = 'block';
-
-              const urlInput = document.getElementById(`urlInput_${i}`);
-              urlInput.value = uploadData.url;
-              document.getElementById(`urlBox_${i}`).style.display = 'flex';
-
-              globalS3Urls.push(uploadData.url);
-              document.getElementById('allUrlsBox').value = globalS3Urls.join('\n');
-            } else {
-              document.getElementById(`spinner_${i}`).innerText = uploadData.error || `S3 Upload Error #${i + 1}`;
-            }
+            globalS3Urls.push(uploadData.url);
+            document.getElementById('allUrlsBox').value = globalS3Urls.join('\n');
           } else {
-            document.getElementById(`spinner_${i}`).innerText = cropData.error || `Crop Error #${i + 1}`;
+            document.getElementById(`spinner_${i}`).innerText = uploadData.error || `S3 Error #${i + 1}`;
           }
         } catch (err) {
           console.error(err);
@@ -227,14 +217,13 @@
 
       try {
         const response = await fetch('/api/extract-json', { method: 'POST', body: formData });
-        
-        // Safe JSON parsing handling non-JSON HTML error responses
         const textResponse = await response.text();
+        
         let resData;
         try {
           resData = JSON.parse(textResponse);
         } catch (pErr) {
-          throw new Error("Server Error Response: " + textResponse.substring(0, 150));
+          throw new Error("Server Error: " + textResponse.substring(0, 150));
         }
 
         if (resData.success) {
@@ -267,86 +256,33 @@
       }
     }
 
-    // Advanced Canvas Cropper with Automatic White-Line / Margin Stripping
-    function cropImageCanvasNoWhiteLines(file, coords) {
+    // High-Speed Local Canvas Cropper (Removes Top Header, Bottom UI & White Spaces)
+    function fastLocalCrop(file) {
       return new Promise((resolve) => {
         const img = new Image();
         img.src = URL.createObjectURL(file);
         img.onload = () => {
           const w = img.width, h = img.height;
 
-          // Initial Gemini Normalized Coordinates
-          let ymin = Math.max(0, Math.floor((coords[0] / 1000) * h));
-          let xmin = Math.max(0, Math.floor((coords[1] / 1000) * w));
-          let ymax = Math.min(h, Math.ceil((coords[2] / 1000) * h));
-          let xmax = Math.min(w, Math.ceil((coords[3] / 1000) * w));
+          // Smart Screenshot Crop Calculation
+          const cropX = 0;
+          const cropY = Math.floor(h * 0.08); // Cuts top status bar & headers
+          const cropW = w;
+          const cropH = Math.floor(h * 0.72); // Cuts bottom buttons, text & ads
 
-          // Draw initial bounding box to temporary canvas for pixel inspection
-          const cropW = xmax - xmin;
-          const cropH = ymax - ymin;
+          const canvas = document.createElement('canvas');
+          canvas.width = cropW;
+          canvas.height = cropH;
+          const ctx = canvas.getContext('2d');
 
-          const tempCanvas = document.createElement('canvas');
-          tempCanvas.width = cropW;
-          tempCanvas.height = cropH;
-          const tempCtx = tempCanvas.getContext('2d');
+          ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
-          tempCtx.drawImage(img, xmin, ymin, cropW, cropH, 0, 0, cropW, cropH);
-
-          // Pixel Inspection to trim top & bottom white lines
-          const imgData = tempCtx.getImageData(0, 0, cropW, cropH);
-          const pixels = imgData.data;
-
-          let trimTop = 0;
-          let trimBottom = cropH;
-
-          // Check Top White Rows
-          for (let y = 0; y < Math.floor(cropH * 0.15); y++) {
-            let isWhiteRow = true;
-            for (let x = 0; x < cropW; x += 5) {
-              const idx = (y * cropW + x) * 4;
-              if (pixels[idx] < 235 || pixels[idx+1] < 235 || pixels[idx+2] < 235) {
-                isWhiteRow = false;
-                break;
-              }
-            }
-            if (isWhiteRow) trimTop = y + 1;
-            else break;
-          }
-
-          // Check Bottom White Rows
-          for (let y = cropH - 1; y > Math.floor(cropH * 0.85); y--) {
-            let isWhiteRow = true;
-            for (let x = 0; x < cropW; x += 5) {
-              const idx = (y * cropW + x) * 4;
-              if (pixels[idx] < 235 || pixels[idx+1] < 235 || pixels[idx+2] < 235) {
-                isWhiteRow = false;
-                break;
-              }
-            }
-            if (isWhiteRow) trimBottom = y;
-            else break;
-          }
-
-          const finalHeight = Math.max(10, trimBottom - trimTop);
-
-          // Draw final clean image without white borders
-          const finalCanvas = document.createElement('canvas');
-          finalCanvas.width = cropW;
-          finalCanvas.height = finalHeight;
-          const finalCtx = finalCanvas.getContext('2d');
-
-          finalCtx.drawImage(
-            tempCanvas,
-            0, trimTop, cropW, finalHeight,
-            0, 0, cropW, finalHeight
-          );
-
-          finalCanvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.95);
+          canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.95);
         };
       });
     }
 
-    // Silent Copy Functionality
+    // Silent Copy Helper
     function silentCopy(text) {
       if (navigator.clipboard && window.isSecureContext) {
         return navigator.clipboard.writeText(text);
@@ -385,5 +321,5 @@
     }
   </script>
 </body>
-</html>
+  </html>
 
