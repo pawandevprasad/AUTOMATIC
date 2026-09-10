@@ -51,7 +51,7 @@ if AWS_ACCESS_KEY and AWS_SECRET_KEY:
         s3_client = boto3.client(
             's3',
             aws_access_key_id=AWS_ACCESS_KEY,
-            aws_secret_access_key=AWS_SECRET_KEY,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
             region_name=AWS_REGION
         )
     except Exception as s3_err:
@@ -283,27 +283,26 @@ def detect_crop_box():
             }]
         }
 
-        # Multi-model endpoint fallback array (Prevents 404 & 500 errors)
-        api_endpoints = [
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}",
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-        ]
+        # Dynamic Endpoint for Gemini Vision API Call
+        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        
+        try:
+            res = requests.post(gemini_url, json=payload, timeout=25)
+        except Exception as req_err:
+            return jsonify({'success': False, 'error': f"Request Exception: {str(req_err)}"}), 500
 
-        res = None
-        for gemini_url in api_endpoints:
-            try:
-                res = requests.post(gemini_url, json=payload, timeout=20)
-                if res.ok:
-                    break
-            except Exception:
-                pass
-
-        if not res or not res.ok:
-            return jsonify({'success': False, 'error': f"Gemini API Error: {res.text if res else 'No response'}"}), 500
+        if not res.ok:
+            # Direct Error Response from Google API
+            return jsonify({'success': False, 'error': f"API Error ({res.status_code}): {res.text[:150]}"}), 500
 
         res_data = res.json()
-        raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
         
+        try:
+            raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
+        except (KeyError, IndexError):
+            return jsonify({'success': False, 'error': "Invalid AI response structure"}), 500
+
+        # Extract coordinates using Regex
         match = re.search(r'\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]', raw_text)
         if match:
             coords = [int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4))]
@@ -312,7 +311,7 @@ def detect_crop_box():
             if len(nums) >= 4:
                 coords = nums[:4]
             else:
-                coords = [300, 0, 800, 1000]
+                coords = [250, 0, 750, 1000]
 
         return jsonify({'success': True, 'coords': coords})
 
@@ -400,22 +399,11 @@ CRITICAL EXTRACTION RULES:
             except Exception as img_err:
                 print(f"Image warning: {img_err}")
 
-        api_endpoints = [
-            f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=){GEMINI_API_KEY}",
-            f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=){GEMINI_API_KEY}"
-        ]
+        gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=){GEMINI_API_KEY}"
+        res = requests.post(gemini_url, json={"contents": [{"parts": parts}]}, timeout=45)
 
-        res = None
-        for gemini_url in api_endpoints:
-            try:
-                res = requests.post(gemini_url, json={"contents": [{"parts": parts}]}, timeout=45)
-                if res.ok:
-                    break
-            except Exception:
-                pass
-
-        if not res or not res.ok:
-            return jsonify({"success": False, "error": f"Gemini API Error: {res.text if res else 'No response'}"}), 500
+        if not res.ok:
+            return jsonify({"success": False, "error": f"Gemini API Error: {res.text[:150]}"}), 500
 
         res_data = res.json()
         raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
