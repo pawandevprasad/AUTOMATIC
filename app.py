@@ -1,6 +1,7 @@
 import os
 import io
 import json
+import re
 import base64
 import boto3
 import requests
@@ -257,7 +258,7 @@ def index():
     except Exception as e:
         return f"Template Render Error: {str(e)}", 500
 
-# 🌟 Original Gemini Bounding Box Crop Endpoint (No Schema Conflict)
+# 🌟 Gemini 3.6 Flash - Safe Bounding Box Extraction Endpoint
 @app.route('/api/detect-crop-box', methods=['POST'])
 def detect_crop_box():
     try:
@@ -276,10 +277,10 @@ def detect_crop_box():
         base64_str = base64.b64encode(byte_arr.getvalue()).decode('utf-8')
 
         prompt_text = (
-            "Detect the main property or room photograph inside this screenshot. "
-            "Ignore top status bar, floating video overlays, contact buttons, and surrounding white margins. "
-            "Return ONLY a raw JSON array of 4 normalized integer coordinates [ymin, xmin, ymax, xmax] from 0 to 1000. "
-            "Do NOT include markdown formatting or extra text. Example response: [200, 50, 800, 950]"
+            "Detect the bounding box of the main room or property photograph in this screenshot. "
+            "Ignore top status bar, floating video, bottom buttons, and white margins. "
+            "Return EXACTLY four integers inside square brackets like [ymin, xmin, ymax, xmax] normalized from 0 to 1000. "
+            "Do not write any explanation, markdown, or extra characters. Example: [250, 50, 750, 950]"
         )
 
         payload = {
@@ -291,15 +292,10 @@ def detect_crop_box():
             }]
         }
 
-        # Original stable endpoint (v1beta gemini-1.5-flash or gemini-2.5-flash)
-        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        # Latest Gemini 3.6 Flash Endpoint
+        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
         
         res = requests.post(gemini_url, json=payload, timeout=25)
-
-        if not res.ok:
-            # Fallback to gemini-2.0-flash if needed
-            fallback_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-            res = requests.post(fallback_url, json=payload, timeout=25)
 
         if not res.ok:
             return jsonify({'success': False, 'error': f"Gemini API Error: {res.text}"}), 500
@@ -307,8 +303,17 @@ def detect_crop_box():
         res_data = res.json()
         raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
         
-        clean_json = raw_text.replace("```json", "").replace("```", "").strip()
-        coords = json.loads(clean_json)
+        # Regex to safely find [ymin, xmin, ymax, xmax]
+        match = re.search(r'\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]', raw_text)
+        if match:
+            coords = [int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4))]
+        else:
+            # Fallback if AI sends plain numbers
+            nums = [int(n) for n in re.findall(r'\d+', raw_text)]
+            if len(nums) >= 4:
+                coords = nums[:4]
+            else:
+                coords = [250, 0, 750, 1000] # Safe fallback
 
         return jsonify({'success': True, 'coords': coords})
 
@@ -396,7 +401,7 @@ CRITICAL EXTRACTION RULES:
             except Exception as img_err:
                 print(f"Image warning: {img_err}")
 
-        gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=){GEMINI_API_KEY}"
+        gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=){GEMINI_API_KEY}"
         res = requests.post(gemini_url, json={"contents": [{"parts": parts}]}, timeout=45)
 
         if not res.ok:
@@ -439,4 +444,4 @@ def submit_to_db():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-                                        
+    
