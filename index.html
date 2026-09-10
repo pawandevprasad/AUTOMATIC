@@ -201,7 +201,7 @@
       document.getElementById('actionBar').style.display = "flex";
     });
 
-    // Helper: Call Gemini API directly from Frontend to get precise room coordinates
+    // Helper: Call Gemini API directly from Frontend set to gemini-3.6-flash
     async function getGeminiCropBox(file, apiKey) {
       const base64Str = await fileToBase64(file);
       
@@ -216,7 +216,8 @@
         }]
       };
 
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+      // Set to Gemini 3.6 Flash endpoint
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -317,4 +318,3 @@
   </script>
 </body>
 </html>
-
