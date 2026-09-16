@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EstateX Instant Video Generator</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background: #0f172a; 
+            color: #ffffff; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            min-height: 100vh; 
+            margin: 0; 
+            padding: 20px;
+        }
+        .card { 
+            background: #1e293b; 
+            padding: 25px; 
+            border-radius: 16px; 
+            width: 100%; 
+            max-width: 450px; 
+            box-shadow: 0 10px 25px rgba(0,0,0,0.4); 
+            border: 1px solid #334155;
+        }
+        h2 { text-align: center; color: #38bdf8; margin-top: 0; font-size: 22px; }
+        label { font-size: 14px; color: #94a3b8; display: block; margin-bottom: 8px; }
+        textarea { 
+            width: 100%; 
+            height: 120px; 
+            padding: 12px; 
+            border-radius: 10px; 
+            border: 1px solid #334155; 
+            background: #0f172a; 
+            color: white; 
+            font-size: 14px; 
+            resize: none; 
+            outline: none;
+        }
+        textarea:focus { border-color: #38bdf8; }
+        .btn-generate { 
+            width: 100%; 
+            padding: 14px; 
+            margin-top: 15px; 
+            border: none; 
+            border-radius: 10px; 
+            background: #0284c7; 
+            color: white; 
+            font-size: 16px; 
+            font-weight: bold; 
+            cursor: pointer; 
+            transition: 0.3s; 
+        }
+        .btn-generate:hover { background: #0369a1; }
+        .btn-generate:disabled { background: #475569; cursor: not-allowed; }
+
+        /* लोडिंग और स्टेटस सेक्शन (स्क्रिप्ट के नीचे) */
+        #output-section { 
+            margin-top: 20px; 
+            display: none; 
+            text-align: center; 
+            border-top: 1px solid #334155; 
+            padding-top: 15px; 
+        }
+        .loader {
+            border: 4px solid #334155;
+            border-top: 4px solid #38bdf8;
+            border-radius: 50%;
+            width: 36px;
+            height: 36px;
+            animation: spin 1s linear infinite;
+            margin: 10px auto;
+            display: none;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        #status-text { font-size: 14px; font-weight: 600; margin: 8px 0; }
+        
+        video { 
+            width: 100%; 
+            border-radius: 10px; 
+            margin-top: 10px; 
+            display: none; 
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        }
+        
+        .btn-download {
+            display: none;
+            width: 100%;
+            padding: 12px;
+            margin-top: 12px;
+            border: none;
+            border-radius: 10px;
+            background: #22c55e;
+            color: white;
+            font-size: 15px;
+            font-weight: bold;
+            text-decoration: none;
+            text-align: center;
+            transition: 0.3s;
+        }
+        .btn-download:hover { background: #16a34a; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>EstateX Video Generator</h2>
+    <label for="scriptBox">अपनी स्क्रिप्ट यहाँ दर्ज करें:</label>
+    <textarea id="scriptBox" placeholder="यहाँ अपनी स्क्रिप्ट पेस्ट करें..."></textarea>
+    
+    <button onclick="generateVideo()" id="generateBtn" class="btn-generate">Generate Video</button>
+
+    <!-- ठीक नीचे बनने वाला आउटपुट सेक्शन -->
+    <div id="output-section">
+        <div class="loader" id="loader"></div>
+        <div id="status-text"></div>
+        
+        <!-- वीडियो प्लेयर -->
+        <video id="videoPlayer" controls></video>
+        
+        <!-- डायरेक्ट गैलरी डाउनलोड बटन -->
+        <a id="downloadBtn" class="btn-download" download="EstateX_Ad.mp4">📥 Download Video to Gallery</a>
+    </div>
+</div>
+
+<script>
+async function generateVideo() {
+    // यहाँ अपना होस्टेड Render बैकएंड URL रखें:
+    const RENDER_API_URL = "https://estatex-video-api.onrender.com"; 
+
+    const script = document.getElementById("scriptBox").value;
+    const generateBtn = document.getElementById("generateBtn");
+    const outputSection = document.getElementById("output-section");
+    const loader = document.getElementById("loader");
+    const statusText = document.getElementById("status-text");
+    const player = document.getElementById("videoPlayer");
+    const downloadBtn = document.getElementById("downloadBtn");
+
+    if (!script.trim()) {
+        alert("कृपया पहले स्क्रिप्ट पेस्ट करें!");
+        return;
+    }
+
+    // 1. UI को लोडिंग स्टेट में बदलें
+    outputSection.style.display = "block";
+    loader.style.display = "block";
+    statusText.innerText = "वीडियो बन रहा है, कृपया प्रतीक्षा करें...";
+    statusText.style.color = "#facc15"; // Yellow
+    generateBtn.disabled = true;
+    player.style.display = "none";
+    downloadBtn.style.display = "none";
+
+    try {
+        // 2. Render बैकएंड को रिक्वेस्ट भेजें
+        const response = await fetch(`${RENDER_API_URL}/generate-video`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ script: script })
+        });
+
+        if (response.ok) {
+            const videoUrl = `${RENDER_API_URL}/download-video?t=` + new Date().getTime();
+
+            // 3. लोडिंग बंद करें और वीडियो दिखाएं
+            loader.style.display = "none";
+            statusText.innerText = "✓ Video Generated Successfully!";
+            statusText.style.color = "#4ade80"; // Green
+
+            // वीडियो प्लेयर में लिंक सेट करें
+            player.src = videoUrl;
+            player.style.display = "block";
+
+            // डाउनलोड बटन एक्टिवेट करें
+            downloadBtn.href = videoUrl;
+            downloadBtn.style.display = "block";
+        } else {
+            throw new Error("वीडियो जनरेट नहीं हो सका।");
+        }
+    } catch (error) {
+        loader.style.display = "none";
+        statusText.innerText = "✕ वीडियो बनाने में एरर आई। फिर से प्रयास करें।";
+        statusText.style.color = "#f87171"; // Red
+    } finally {
+        generateBtn.disabled = false;
+    }
+}
+</script>
+
+</body>
+</html>
+
