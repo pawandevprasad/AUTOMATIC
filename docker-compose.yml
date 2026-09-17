@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  watermark-ai:
+    build: .
+    container_name: watermark-ai-engine
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - .:/app
+      
